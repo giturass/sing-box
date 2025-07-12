@@ -1,9 +1,8 @@
 {
-  "version": 2,
+  "version": 3,
   "rules": [
     {
       "domain_suffix": [
-        "a.baidu.com",
         "ad.duapps.com",
         "ad.player.baidu.com",
         "adscdn.baidu.com",
