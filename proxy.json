@@ -14,7 +14,8 @@
         "digitalocean",
         "ampproject",
         "discord",
-        "microsoft"
+        "microsoft",
+        "openai"
       ],
       "domain_suffix": [
         "amazonaws.com",
@@ -78,7 +79,21 @@
         "branch.io",
         "akamaized.net",
         "terabox.com",
-        "office365.com"
+        "office365.com",
+        "grok.com",
+        "segment.io",
+        "oaistatic.com",
+        "oaiusercontent.com",
+        "auth0.com",
+        "intercom.io",
+        "intercomcdn.com",
+        "npmjs.com",
+        "pages.dev",
+        "workers.dev",
+        "x.com",
+        "periscope.tv",
+        "ghcr.io",
+        "git.io"
       ],
       "ip_cidr": [
         "91.108.56.0/22",
