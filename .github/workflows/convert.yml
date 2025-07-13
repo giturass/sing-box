@@ -13,32 +13,23 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      # 检出仓库代码
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      # 安装 sing-box
       - name: Install sing-box
         run: |
-          # 根据 sing-box 的官方安装指南安装
-          # 这里假设使用预编译二进制文件，具体版本请根据需要调整
           wget https://github.com/SagerNet/sing-box/releases/download/v1.12.0-beta.33/sing-box-1.12.0-beta.33-linux-amd64.tar.gz
           tar -xzf sing-box-1.12.0-beta.33-linux-amd64.tar.gz
           sudo mv sing-box-1.12.0-beta.33-linux-amd64/sing-box /usr/local/bin/
           rm -rf sing-box-linux-amd64*
 
-      # 查找并转换 .json 文件为 .srs 文件
       - name: Convert JSON to SRS
         run: |
-          # 查找所有 .json 文件
           find . -type f -name "*.json" | while read -r json_file; do
-            # 获取文件名（不含扩展名）
             filename=$(basename "$json_file" .json)
-            # 转换 .json 文件为 .srs 文件
             sing-box rule-set compile --output "${filename}.srs" "$json_file"
           done
 
-      # 提交转换后的 .srs 文件
       - name: Commit SRS files
         run: |
           git config --local user.email "github-actions[bot]@users.noreply.github.com"
