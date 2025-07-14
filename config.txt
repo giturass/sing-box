@@ -1,0 +1,319 @@
+{
+  "log": {
+    "level": "panic",
+    "output": "box.log",
+    "timestamp": true
+  },
+  "dns": {
+    "servers": [
+      {
+        "type": "tls",
+        "tag": "remote",
+        "detour": "Proxy",
+        "server": "1.1.1.1",
+        "server_port": 853
+      },
+      {
+        "type": "tls",
+        "tag": "local",
+        "server": "120.53.53.53",
+        "server_port": 853
+      },
+      {
+        "type": "fakeip",
+        "tag": "fakeip",
+        "inet4_range": "198.18.0.0/15",
+        "inet6_range": "fc00::/18"
+      }
+    ],
+    "rules": [
+      {
+        "clash_mode": "Direct",
+        "server": "local"
+      },
+      {
+        "clash_mode": "Global",
+        "server": "fakeip"
+      },
+      {
+        "query_type": "HTTPS",
+        "action": "reject"
+      },
+      {
+        "query_type": [
+          "A",
+          "AAAA"
+        ],
+        "server": "fakeip",
+        "rewrite_ttl": 1
+      },
+      {
+        "rule_set": "cn_domain",
+        "server": "local"
+      }
+    ],
+    "final": "remote",
+    "independent_cache": true
+  },
+  "inbounds": [
+    {
+      "type": "tun",
+      "mtu": 1400,
+      "address": [
+        "172.19.0.0/30",
+        "fdfe:dcba:9876::/126"
+      ],
+      "auto_route": true,
+      "strict_route": true,
+      "route_address": [
+        "0.0.0.0/1",
+        "128.0.0.0/1",
+        "::/1",
+        "8000::/1"
+      ],
+      "route_exclude_address": [
+        "192.168.0.0/16",
+        "fc00::/7"
+      ],
+      "stack": "gvisor",
+      "sniff": true
+    }
+  ],
+  "outbounds": [
+    {
+      "type": "vless",
+      "tag": "RN_US",
+      "server": "",
+      "server_port": ,
+      "uuid": "",
+      "tls": {
+        "enabled": true,
+        "server_name": "",
+        "utls": {
+          "enabled": true,
+          "fingerprint": "chrome"
+        },
+        "reality": {
+          "enabled": true,
+          "public_key": "",
+          "short_id": ""
+        }
+      },
+      "packet_encoding": ""
+    },
+    {
+      "type": "vless",
+      "tag": "CLAW_JP",
+      "server": "",
+      "server_port": 443,
+      "uuid": "",
+      "tls": {
+        "enabled": true,
+        "server_name": ""
+      },
+      "transport": {
+        "type": "ws",
+        "path": "/",
+        "headers": {
+          "Host": ""
+        }
+      },
+      "packet_encoding": "xudp"
+    },
+    {
+      "type": "vless",
+      "tag": "KYB_DE",
+      "server": "",
+      "server_port": 443,
+      "uuid": "",
+      "tls": {
+        "enabled": true,
+        "server_name": ""
+      },
+      "transport": {
+        "type": "ws",
+        "path": "/",
+        "headers": {
+          "Host": ""
+        }
+      },
+      "packet_encoding": "xudp"
+    },
+    {
+      "type": "vless",
+      "tag": "RD_SG",
+      "server": "",
+      "server_port": 443,
+      "uuid": "",
+      "tls": {
+        "enabled": true,
+        "server_name": ""
+      },
+      "transport": {
+        "type": "ws",
+        "path": "/",
+        "headers": {
+          "Host": ""
+        }
+      },
+      "packet_encoding": "xudp"
+    },
+    {
+      "type": "socks",
+      "tag": "SOCKS_US",
+      "server": "",
+      "server_port": ,
+      "version": "5",
+      "username": "",
+      "password": ""
+    },
+    {
+      "type": "selector",
+      "tag": "Proxy",
+      "outbounds": [
+        "RN_US",
+        "CLAW_JP",
+        "RD_SG",
+        "KYB_DE",
+        "SOCKS_US",
+        "direct"
+      ],
+      "default": "RN_US"
+    },
+    {
+      "type": "direct",
+      "tag": "direct"
+    }
+  ],
+  "route": {
+    "rules": [
+      {
+        "action": "sniff",
+        "sniffer": [
+          "http",
+          "tls",
+          "quic",
+          "dns"
+        ],
+        "timeout": "500ms"
+      },
+      {
+        "type": "logical",
+        "mode": "or",
+        "rules": [
+          {
+            "port": 53
+          },
+          {
+            "protocol": "dns"
+          }
+        ],
+        "action": "hijack-dns"
+      },
+      {
+        "ip_is_private": true,
+        "outbound": "direct"
+      },
+      {
+        "rule_set": "adblock",
+        "action": "reject",
+        "method": "drop"
+      },
+      {
+        "rule_set": "direct",
+        "outbound": "direct"
+      },
+      {
+        "rule_set": "proxy",
+        "outbound": "Proxy"
+      },
+      {
+        "clash_mode": "Global",
+        "outbound": "Proxy"
+      },
+      {
+        "clash_mode": "Direct",
+        "outbound": "direct"
+      },
+      {
+        "type": "logical",
+        "mode": "and",
+        "rules": [
+          {
+            "rule_set": "proxy_domain"
+          },
+          {
+            "rule_set": "cn_domain",
+            "invert": true
+          }
+        ],
+        "outbound": "Proxy"
+      },
+      {
+        "action": "resolve"
+      },
+      {
+        "rule_set": [
+          "cn_ip",
+          "cn_domain"
+        ],
+        "outbound": "direct"
+      }
+    ],
+    "rule_set": [
+      {
+        "type": "remote",
+        "tag": "cn_ip",
+        "url": "https://gitfly.qzz.io/https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/refs/heads/sing/geo/geoip/cn.srs",
+        "download_detour": "direct"
+      },
+      {
+        "type": "remote",
+        "tag": "cn_domain",
+        "url": "https://gitfly.qzz.io/https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/refs/heads/sing/geo-lite/geosite/cn.srs",
+        "download_detour": "direct"
+      },
+      {
+        "type": "remote",
+        "tag": "proxy_domain",
+        "url": "https://gitfly.qzz.io/https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/refs/heads/sing/geo/geosite/geolocation-!cn.srs",
+        "download_detour": "direct"
+      },
+      {
+        "type": "remote",
+        "tag": "adblock",
+        "url": "https://gitfly.qzz.io/https://github.com/giturass/sing-box/raw/refs/heads/main/ads.srs",
+        "download_detour": "direct"
+      },
+      {
+        "type": "remote",
+        "tag": "proxy",
+        "url": "https://gitfly.qzz.io/https://github.com/giturass/sing-box/raw/refs/heads/main/proxy.srs",
+        "download_detour": "direct"
+      },
+      {
+        "type": "remote",
+        "tag": "direct",
+        "url": "https://gitfly.qzz.io/https://github.com/giturass/sing-box/raw/refs/heads/main/direct.srs",
+        "download_detour": "direct"
+      }
+    ],
+    "final": "Proxy",
+    "auto_detect_interface": true,
+    "override_android_vpn": true,
+    "default_domain_resolver": "local"
+  },
+  "experimental": {
+    "cache_file": {
+      "enabled": true,
+      "store_fakeip": true
+    },
+    "clash_api": {
+      "external_controller": "127.0.0.1:9090",
+      "external_ui": "ui",
+      "external_ui_download_url": "https://gitfly.qzz.io/https://github.com/MetaCubeX/metacubexd/archive/refs/heads/gh-pages.zip",
+      "external_ui_download_detour": "direct",
+      "secret": ""
+    }
+  }
+}
