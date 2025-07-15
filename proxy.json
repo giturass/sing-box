@@ -15,6 +15,7 @@
         "ampproject",
         "discord",
         "microsoft",
+        "cloudfront",
         "openai"
       ],
       "domain_suffix": [
@@ -69,6 +70,8 @@
         "walletlink.org",
         "crossbell.io",
         "xlog.app",
+        "xhamster.com",
+        "xhcdn.com",
         "bing.com",
         "live.com",
         "msauth.net",
