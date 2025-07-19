@@ -20,6 +20,8 @@
       ],
       "domain_suffix": [
         "amazonaws.com",
+        "huggingface.co",
+        "hf.space",
         "1drv.com",
         "hotmail.com",
         "icloud.com",
