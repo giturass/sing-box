@@ -18,9 +18,9 @@ jobs:
 
       - name: Install sing-box
         run: |
-          wget https://github.com/SagerNet/sing-box/releases/download/v1.12.0-beta.34/sing-box-1.12.0-beta.34-linux-amd64.tar.gz
-          tar -xzf sing-box-1.12.0-beta.34-linux-amd64.tar.gz
-          sudo mv sing-box-1.12.0-beta.34-linux-amd64/sing-box /usr/local/bin/
+          wget https://github.com/SagerNet/sing-box/releases/download/v1.12.0-beta.35/sing-box-1.12.0-beta.35-linux-amd64.tar.gz
+          tar -xzf sing-box-1.12.0-beta.35-linux-amd64.tar.gz
+          sudo mv sing-box-1.12.0-beta.35-linux-amd64/sing-box /usr/local/bin/
           rm -rf sing-box-linux-amd64*
 
       - name: Convert JSON to SRS
