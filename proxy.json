@@ -21,6 +21,11 @@
       ],
       "domain_suffix": [
         "amazonaws.com",
+        "prodregistryv2.org",
+        "cloudflare-dns.com",
+        "intercom.io",
+        "assetsconfigcdn.org",
+        "twilio.com",
         "huggingface.co",
         "hf.space",
         "sagernet.org",
