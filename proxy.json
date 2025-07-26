@@ -14,6 +14,7 @@
         "digitalocean",
         "ampproject",
         "discord",
+        "stripe",
         "microsoft",
         "vercel",
         "cloudfront",
