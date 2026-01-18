@@ -16,12 +16,24 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Install sing-box
+      - name: Install sing-box (latest)
         run: |
-          wget https://github.com/SagerNet/sing-box/releases/download/v1.12.13/sing-box-1.12.13-linux-amd64.tar.gz
-          tar -xzf sing-box-1.12.13-linux-amd64.tar.gz
-          sudo mv sing-box-1.12.13-linux-amd64/sing-box /usr/local/bin/
-          rm -rf sing-box-linux-amd64*
+          set -e
+
+          # 获取最新版本 tag
+          LATEST_TAG=$(curl -s https://api.github.com/repos/SagerNet/sing-box/releases/latest | jq -r .tag_name)
+          echo "Latest sing-box version: $LATEST_TAG"
+
+          # 下载并解压
+          wget https://github.com/SagerNet/sing-box/releases/download/${LATEST_TAG}/sing-box-${LATEST_TAG#v}-linux-amd64.tar.gz
+          tar -xzf sing-box-${LATEST_TAG#v}-linux-amd64.tar.gz
+
+          # 安装到系统路径
+          sudo mv sing-box-${LATEST_TAG#v}-linux-amd64/sing-box /usr/local/bin/
+          sing-box version
+
+          # 清理文件
+          rm -rf sing-box-${LATEST_TAG#v}-linux-amd64*
 
       - name: Convert JSON to SRS
         run: |
