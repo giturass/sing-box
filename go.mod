@@ -200,3 +200,5 @@ require (
 )
 
 replace github.com/sagernet/sing-tun => ./.b-box/sing-tun
+
+replace github.com/sagernet/sing-vmess => ./.b-box/sing-vmess

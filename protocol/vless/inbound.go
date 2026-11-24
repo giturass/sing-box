@@ -14,6 +14,7 @@ import (
 	C "github.com/sagernet/sing-box/constant"
 	"github.com/sagernet/sing-box/log"
 	"github.com/sagernet/sing-box/option"
+	"github.com/sagernet/sing-box/protocol/vless/encryption"
 	"github.com/sagernet/sing-box/transport/v2ray"
 	"github.com/sagernet/sing-vmess/packetaddr"
 	"github.com/sagernet/sing-vmess/vless"
@@ -35,24 +36,27 @@ var _ adapter.TCPInjectableInbound = (*Inbound)(nil)
 
 type Inbound struct {
 	inbound.Adapter
-	ctx        context.Context
-	router     adapter.ConnectionRouterEx
-	logger     logger.ContextLogger
-	listener   *listener.Listener
-	users      []option.VLESSUser
-	service    *vless.Service[int]
-	tlsConfig  tls.ServerConfig
-	transport  adapter.V2RayServerTransport
-	references []string
+	ctx               context.Context
+	router            adapter.ConnectionRouterEx
+	logger            logger.ContextLogger
+	listener          *listener.Listener
+	users             []option.VLESSUser
+	service           *vless.Service[int]
+	decryptionContext context.Context
+	decryption        *encryption.ServerInstance
+	tlsConfig         tls.ServerConfig
+	transport         adapter.V2RayServerTransport
+	references        []string
 }
 
 func NewInbound(ctx context.Context, router adapter.Router, logger log.ContextLogger, tag string, options option.VLESSInboundOptions) (adapter.Inbound, error) {
 	inbound := &Inbound{
-		Adapter: inbound.NewAdapter(C.TypeVLESS, tag),
-		ctx:     ctx,
-		router:  uot.NewRouter(router, logger),
-		logger:  logger,
-		users:   options.Users,
+		Adapter:           inbound.NewAdapter(C.TypeVLESS, tag),
+		ctx:               ctx,
+		decryptionContext: ctx,
+		router:            uot.NewRouter(router, logger),
+		logger:            logger,
+		users:             options.Users,
 	}
 	var err error
 	inbound.router, err = mux.NewRouterWithOptions(inbound.router, logger, common.PtrValueOrDefault(options.Multiplex))
@@ -68,6 +72,10 @@ func NewInbound(ctx context.Context, router adapter.Router, logger log.ContextLo
 		return it.Flow
 	}))
 	inbound.service = service
+	inbound.decryption, err = encryption.NewServer(options.Decryption)
+	if err != nil {
+		return nil, err
+	}
 	if options.TLS != nil {
 		inbound.tlsConfig, err = tls.NewServerWithOptions(tls.ServerOptions{
 			Context: ctx,
@@ -105,6 +113,10 @@ func NewInbound(ctx context.Context, router adapter.Router, logger log.ContextLo
 func (h *Inbound) Start(stage adapter.StartStage, scope *adapter.Scope) error {
 	if stage != adapter.StartStateStart {
 		return nil
+	}
+	if h.decryption != nil {
+		h.decryptionContext = scope.Context()
+		scope.Add(h.decryption.Close)
 	}
 	if h.tlsConfig != nil {
 		err := h.tlsConfig.Start()
@@ -159,6 +171,25 @@ func (h *Inbound) NewConnection(ctx context.Context, conn net.Conn, metadata ada
 			return
 		}
 		conn = tlsConn
+	}
+	if h.decryption != nil {
+		rawConn := conn
+		closeConn := func() { rawConn.Close() }
+		stopCaller := context.AfterFunc(ctx, closeConn)
+		stopService := context.AfterFunc(h.decryptionContext, closeConn)
+		encryptedConn, err := h.decryption.Handshake(rawConn)
+		callerStopped, serviceStopped := stopCaller(), stopService()
+		if !callerStopped || !serviceStopped {
+			err = context.Canceled
+		}
+		if err != nil {
+			N.CloseOnHandshakeFailure(rawConn, onClose, err)
+			if !E.IsClosedOrCanceled(err) {
+				h.logger.ErrorContext(ctx, E.Cause(err, "process connection from ", metadata.Source, ": VLESS decryption handshake"))
+			}
+			return
+		}
+		conn = encryptedConn
 	}
 	err := h.service.NewConnection(adapter.WithContext(ctx, &metadata), conn, metadata.Source, onClose)
 	if err != nil {
