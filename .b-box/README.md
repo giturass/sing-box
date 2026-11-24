@@ -10,5 +10,8 @@ This branch is the [B-box](https://github.com/giturass/B-box) core: SagerNet/sin
 | `goja/` | `github.com/dop251/goja` `v0.0.0-20261102223426-a177d211bf60` with `patches/goja-regexp-cancel.patch` and `bbox_regexp_interrupt.go` |
 | `patches/` | The dependency patches above, kept for rebasing when a pinned dependency changes |
 | `xhttp/` | Provenance of the XHTTP and VLESS Encryption port |
+| `verify.py` | Checks every copy against the module hash of its pinned version |
 
-`go.mod` points the four modules at these copies with local `replace` directives. To move to a new sing-box tag, rebase the commits after the upstream tag onto it; to change a pinned dependency, replace its copy with the new module source and reapply the matching patch.
+`go.mod` points the four modules at these copies with local `replace` directives. `python3 .b-box/verify.py` reverses each patch on a scratch copy of the tracked files, removes the files B-box adds and compares the result with the Go module hash (`h1`) of the pinned version; B-box's core setup runs it before every test and build.
+
+To move to a new sing-box tag, rebase the commits after the upstream tag onto it. To change a pinned dependency, replace its copy with the new module source, reapply the matching patch and update the version and hash in `verify.py`. Add a copy with `git add -f`: sing-tun and regexp2 ignore files that they ship.
