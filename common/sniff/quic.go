@@ -23,6 +23,13 @@ import (
 )
 
 func QUICClientHello(ctx context.Context, metadata *adapter.InboundContext, packet []byte) error {
+	return QUICClientHelloDebug(ctx, metadata, packet, nil)
+}
+
+// QUICClientHelloDebug preserves the native read-only Initial parser and exposes
+// the fully reassembled TLS record only after successful ClientHello parsing.
+// The record is valid only during onHello; callers retaining it must copy it.
+func QUICClientHelloDebug(ctx context.Context, metadata *adapter.InboundContext, packet []byte, onHello func([]byte)) error {
 	reader := bytes.NewReader(packet)
 	typeByte, err := reader.ReadByte()
 	if err != nil {
@@ -313,6 +320,9 @@ find:
 	}
 	if domain := M.ParseSocksaddrHostPort(fingerprint.ServerName, 0).Fqdn; domain != "" && (domain != metadata.ECHPublicName || !slices.Contains(fingerprint.Extensions, extensionEncryptedClientHello)) {
 		metadata.Domain = domain
+	}
+	if onHello != nil {
+		onHello(buffer.Bytes())
 	}
 	for metadata.Client == "" {
 		if len(frameTypeList) == 1 {

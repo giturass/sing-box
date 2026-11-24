@@ -151,7 +151,7 @@ func (r *Router) routeConnection(ctx context.Context, conn net.Conn, metadata ad
 		return err
 	}
 	for _, buffer := range slices.Backward(buffers) {
-		conn = bufio.NewCachedConn(conn, buffer)
+		conn = newDebugCachedConn(conn, buffer)
 	}
 	if selectedRule != nil {
 		metadata.RouteRule = selectedRule.String()
@@ -164,6 +164,11 @@ func (r *Router) routeConnection(ctx context.Context, conn net.Conn, metadata ad
 	ctx = interrupt.ContextWithIsExternalConnection(ctx, true)
 	onClose = registerInterrupt(chain, conn, onClose)
 	outbound := chain[len(chain)-1]
+	var captured bool
+	conn, captured = r.routeHTTPDebug(ctx, conn, metadata, outbound, onClose)
+	if captured {
+		return nil
+	}
 	if outboundHandler, isHandler := outbound.(adapter.ConnectionHandler); isHandler {
 		outboundHandler.NewConnection(ctx, conn, metadata, onClose)
 	} else {
@@ -307,6 +312,16 @@ func (r *Router) routePacketConnection(ctx context.Context, conn N.PacketConn, m
 		N.ReleaseMultiPacketBuffer(packetBuffers)
 		return err
 	}
+	if debugNeedsStream(metadata) && deadline.NeedAdditionalReadDeadline(conn) {
+		conn = deadline.NewPacketConn(bufio.NewNetPacketConn(conn))
+	}
+	var quicSelection *debugQUICSelection
+	var rejectQUIC bool
+	packetBuffers, quicSelection, rejectQUIC = debugObserveQUIC(ctx, conn, metadata, packetBuffers)
+	if rejectQUIC {
+		N.ReleaseMultiPacketBuffer(packetBuffers)
+		return E.New("QUIC rejected by local MITM capture; retry over TCP")
+	}
 	for _, buffer := range slices.Backward(packetBuffers) {
 		conn = bufio.NewCachedPacketConn(conn, buffer.Buffer, buffer.Destination)
 		N.PutPacketBuffer(buffer)
@@ -325,6 +340,9 @@ func (r *Router) routePacketConnection(ctx context.Context, conn N.PacketConn, m
 	ctx = interrupt.ContextWithIsExternalConnection(ctx, true)
 	onClose = registerInterrupt(chain, conn, onClose)
 	outbound := chain[len(chain)-1]
+	if r.routeQUICDebug(ctx, conn, metadata, outbound, quicSelection, onClose) {
+		return nil
+	}
 	if outboundHandler, isHandler := outbound.(adapter.PacketConnectionHandler); isHandler {
 		outboundHandler.NewPacketConnection(ctx, conn, metadata, onClose)
 	} else {
@@ -463,6 +481,9 @@ func applyRouteOptionsOverride(metadata *adapter.InboundContext, routeOptions *R
 
 func (r *Router) preMatchFlow(ctx context.Context, metadata *adapter.InboundContext, packetDestination M.Socksaddr, matchedRule adapter.Rule, outboundTag string) adapter.PreMatchResult {
 	continueResult := adapter.PreMatchResult{Action: adapter.PreMatchContinue}
+	if debugNeedsStream(*metadata) {
+		return continueResult
+	}
 	var outbound adapter.Outbound
 	if outboundTag == "" {
 		outbound = r.outbound.Default()
