@@ -276,7 +276,7 @@ func FormatConfig(configContent string) (*StringBox, error) {
 	if err != nil {
 		return nil, err
 	}
-	return wrapString(buffer.String()), nil
+	return PreserveUIConfigNodes(configContent, buffer.String())
 }
 
 func HasTunInbound(configContent string) (bool, error) {
