@@ -2,6 +2,7 @@ package masque
 
 import (
 	"context"
+	"io"
 	"net/netip"
 	"slices"
 	"sync"
@@ -33,12 +34,19 @@ type ClientHandler interface {
 	FrontHeadroom() int
 }
 
+type TunnelClient interface {
+	OpenTunnel(ctx context.Context, protocol string, path string) (io.ReadWriteCloser, error)
+	ResetConnections()
+	Close() error
+}
+
 type ClientOptions struct {
 	Context         context.Context
 	Logger          logger.ContextLogger
-	HTTPClient      *transportHTTP.Client
+	HTTPClient      TunnelClient
 	Path            string
 	AdvertiseRoutes []netip.Prefix
+	LocalAddress    []netip.Prefix
 	Handler         ClientHandler
 }
 
@@ -46,9 +54,10 @@ type Client struct {
 	ctx             context.Context
 	cancel          context.CancelFunc
 	logger          logger.ContextLogger
-	httpClient      *transportHTTP.Client
+	httpClient      TunnelClient
 	template        *Template
 	advertiseRoutes []AddressRange
+	localAddress    []netip.Prefix
 	handler         ClientHandler
 	access          sync.Mutex
 	current         *clientSession
@@ -84,6 +93,7 @@ func NewClient(options ClientOptions) (*Client, error) {
 		httpClient:      options.HTTPClient,
 		template:        template,
 		advertiseRoutes: advertiseRoutes,
+		localAddress:    slices.Clone(options.LocalAddress),
 		handler:         options.Handler,
 		stateUpdated:    make(chan struct{}),
 	}, nil
@@ -169,7 +179,7 @@ func (c *Client) connect() (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	current := &clientSession{client: c}
+	current := &clientSession{client: c, configuration: Configuration{Address: slices.Clone(c.localAddress)}}
 	c.access.Lock()
 	if c.suspended || c.restarting {
 		c.access.Unlock()
@@ -179,10 +189,15 @@ func (c *Client) connect() (bool, error) {
 	current.session = newSession(c.ctx, stream, current, c.handler.FrontHeadroom)
 	c.current = current
 	c.access.Unlock()
-	err = current.writeCapsule(newAddressCapsule(capsuleTypeAddressRequest, []AssignedAddress{
-		{RequestID: 1, Prefix: netip.PrefixFrom(netip.IPv4Unspecified(), 32)},
-		{RequestID: 2, Prefix: netip.PrefixFrom(netip.IPv6Unspecified(), 128)},
-	}))
+	if len(c.localAddress) > 0 {
+		// WARP assigns addresses during account enrollment, outside the tunnel.
+		err = current.updateConfiguration(current.configuration)
+	} else {
+		err = current.writeCapsule(newAddressCapsule(capsuleTypeAddressRequest, []AssignedAddress{
+			{RequestID: 1, Prefix: netip.PrefixFrom(netip.IPv4Unspecified(), 32)},
+			{RequestID: 2, Prefix: netip.PrefixFrom(netip.IPv6Unspecified(), 128)},
+		}))
+	}
 	if err == nil && len(c.advertiseRoutes) > 0 {
 		err = current.writeCapsule(newRouteCapsule(c.advertiseRoutes))
 	}
@@ -275,6 +290,9 @@ func (c *Client) RestartSession() {
 	c.restarting = true
 	if c.current != nil {
 		c.current.cancel(E.New("network changed"))
+		// The loop removes a cancelled session only after it has shut down.
+		// A dial must wait for the replacement instead of finding this one ready.
+		c.current = nil
 	}
 	c.lastError = nil
 	c.notifyStateLocked()
@@ -332,6 +350,9 @@ func (c *Client) WritePacketBuffers(packetBuffers []*buf.Buffer, forwarded bool)
 }
 
 func (s *clientSession) handleAddressAssign(addresses []AssignedAddress) error {
+	if len(s.client.localAddress) > 0 {
+		return nil
+	}
 	var assigned []netip.Prefix
 	for _, address := range addresses {
 		if address.RequestID != 0 && address.Prefix.Addr().IsUnspecified() && address.Prefix.IsSingleIP() {
