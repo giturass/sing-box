@@ -36,6 +36,9 @@ type CommandServer struct {
 	oomRecorder       *oomkiller.Recorder
 	grpcServer        *grpc.Server
 	listener          net.Listener
+	uiEgressProbes     uiEgressProbeSet
+	uiProcessingRoutes *uiRouteLifecycle
+	uiProcessingState *uiProcessingState
 }
 
 type CommandServerHandler interface {
@@ -179,6 +182,10 @@ func (s *CommandServer) Start() error {
 }
 
 func (s *CommandServer) Close() {
+	uiCaptureLifecycle.Lock()
+	defer uiCaptureLifecycle.Unlock()
+	s.uiEgressProbes.close()
+	s.stopUIProcessing()
 	if s.grpcServer != nil {
 		s.grpcServer.Stop()
 	}
@@ -192,14 +199,30 @@ type OverrideOptions struct {
 	AutoRedirect   bool
 	IncludePackage StringIterator
 	ExcludePackage StringIterator
+	ProcessingDirectory string
+	ProcessingProfileDirectory string
+	MitmCertificate string
+	MitmSigner UICaptureSigner
+	ScriptTimezone string
 }
 
 func (s *CommandServer) StartOrReloadService(configContent string, options *OverrideOptions) error {
-	saveConfigSnapshot(configContent)
+	uiCaptureLifecycle.Lock()
+	defer uiCaptureLifecycle.Unlock()
+	wasRunning := s.Instance() != nil
+	normalizedContent, err := RemoveUIRetiredCaptureOptions(configContent)
+	if err != nil { return err }
+	preparedProcessing, err := s.prepareUIProcessing(normalizedContent, options)
+	if err != nil {
+		return err
+	}
+	s.uiEgressProbes.close()
+	s.stopUIProcessing()
+	saveConfigSnapshot(normalizedContent)
 	if s.powerManager.Recorder() != nil {
 		copyConfigSnapshot(filepath.Join(sWorkingPath, powerreport.DraftDirectoryName))
 	}
-	err := s.StartedService.StartOrReloadService(s.ctx, configContent, &daemon.OverrideOptions{
+	err = s.StartedService.StartOrReloadService(s.ctx, normalizedContent, &daemon.OverrideOptions{
 		AutoRedirect:   options.AutoRedirect,
 		IncludePackage: iteratorToArray(options.IncludePackage),
 		ExcludePackage: iteratorToArray(options.ExcludePackage),
@@ -207,10 +230,15 @@ func (s *CommandServer) StartOrReloadService(configContent string, options *Over
 	if err != nil {
 		return E.Cause(err, "start or reload service")
 	}
+	s.activateUIProcessing(preparedProcessing, wasRunning)
 	return nil
 }
 
 func (s *CommandServer) CloseService() error {
+	uiCaptureLifecycle.Lock()
+	defer uiCaptureLifecycle.Unlock()
+	s.uiEgressProbes.close()
+	s.stopUIProcessing()
 	return s.StartedService.CloseService()
 }
 

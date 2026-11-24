@@ -3,6 +3,7 @@ package daemon
 import (
 	"bytes"
 	"context"
+	"crypto/x509"
 
 	"github.com/sagernet/sing-box"
 	"github.com/sagernet/sing-box/adapter"
@@ -194,6 +195,11 @@ func (i *Instance) registerPowerReport(ctx context.Context, reloading bool) {
 			recorder.RecordPauseEvent(event)
 		}
 	})
+}
+
+// UIRootPool exposes the current profile's certificate store to routed scripts.
+func (i *Instance) UIRootPool() *x509.CertPool {
+    return adapter.RootPoolFromContext(i.ctx)
 }
 
 func (i *Instance) Box() *box.Box {
