@@ -13,6 +13,13 @@ import (
 	"time"
 )
 
+// The probe only chooses between HTTP and raw stream handling; reaching a limit
+// selects the raw stream and still replays every byte read.
+const (
+	tlsProbeLineLimit = 64 << 10
+	tlsProbeTimeout   = 10 * time.Second
+)
+
 type tlsProtocolProbe struct {
 	data  []byte
 	http1 bool
@@ -31,11 +38,14 @@ func inspectTLSProtocol(ctx context.Context, client, upstream *tls.Conn) (net.Co
 	}()
 	var fromClient, fromServer tlsProtocolProbe
 	var clientDone, serverDone bool
+	timeout := time.NewTimer(tlsProbeTimeout)
+	defer timeout.Stop()
 	select {
 	case fromClient = <-clientResult:
 		clientDone = true
 	case fromServer = <-serverResult:
 		serverDone = true
+	case <-timeout.C:
 	case <-ctx.Done():
 		client.Close()
 		upstream.Close()
@@ -93,6 +103,9 @@ func probeHTTPRequestLine(conn net.Conn) tlsProtocolProbe {
 				break
 			}
 		} else if value < ' ' && value != '\r' || value == 127 {
+			break
+		}
+		if len(result.data) >= tlsProbeLineLimit {
 			break
 		}
 	}

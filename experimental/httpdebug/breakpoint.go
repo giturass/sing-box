@@ -356,7 +356,9 @@ func (e *Engine) hold(request *http.Request, message *PausedMessage, note func(s
 		return BreakpointDecision{}, false, nil
 	}
 	defer breakpoints.remove(message)
-	if e.recording.Load() == nil {
+	// Recording or breakpoints may have been turned off while the body was
+	// read; their release ran before this message was listed.
+	if config := breakpoints.config.Load(); e.recording.Load() == nil || config == nil || !config.Enabled {
 		return BreakpointDecision{}, false, nil
 	}
 	note("Paused at " + message.Phase + " breakpoint")
