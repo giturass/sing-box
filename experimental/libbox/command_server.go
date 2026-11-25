@@ -41,6 +41,7 @@ type CommandServer struct {
 	grpcServer        *grpc.Server
 	listener          net.Listener
 	uiEgressProbes     uiEgressProbeSet
+	uiReplayTasks      uiReplayTaskSet
 	uiProcessingRoutes *uiRouteLifecycle
 	uiProcessingState *uiProcessingState
 }
@@ -189,6 +190,7 @@ func (s *CommandServer) Close() {
 	uiCaptureLifecycle.Lock()
 	defer uiCaptureLifecycle.Unlock()
 	s.uiEgressProbes.close()
+	s.uiReplayTasks.close()
 	s.stopUIProcessing()
 	if s.grpcServer != nil {
 		s.grpcServer.Stop()
@@ -221,6 +223,7 @@ func (s *CommandServer) StartOrReloadService(configContent string, options *Over
 		return err
 	}
 	s.uiEgressProbes.close()
+	s.uiReplayTasks.close()
 	s.stopUIProcessing()
 	saveConfigSnapshot(normalizedContent)
 	if s.powerManager.Recorder() != nil {
@@ -242,6 +245,7 @@ func (s *CommandServer) CloseService() error {
 	uiCaptureLifecycle.Lock()
 	defer uiCaptureLifecycle.Unlock()
 	s.uiEgressProbes.close()
+	s.uiReplayTasks.close()
 	s.stopUIProcessing()
 	return s.StartedService.CloseService()
 }

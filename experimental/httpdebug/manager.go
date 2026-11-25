@@ -86,6 +86,7 @@ func Stop() {
 		return
 	}
 	current.stopRecording()
+	breakpoints.release()
 	lastCaptureState = current.captureState()
 	writeLog("info", "Recording stopped; existing connections, profile MITM, rewrites, scripts and cron continue")
 }
@@ -132,16 +133,20 @@ type State struct {
 	EventScriptsRunning   int    `json:"eventScriptsRunning"`
 	GenericScriptsRunning int    `json:"genericScriptsRunning"`
 	StreamScriptsRunning  int    `json:"streamScriptsRunning"`
+	BreakpointRules       int    `json:"breakpointRules"`
+	PausedMessages        int    `json:"pausedMessages"`
 }
 
 func Status() State {
 	managerMu.Lock()
 	defer managerMu.Unlock()
-	engine := Current()
-	if engine == nil {
-		return lastCaptureState
+	state := lastCaptureState
+	if engine := Current(); engine != nil {
+		state = engine.captureState()
 	}
-	return engine.captureState()
+	// Breakpoints belong to the process, not to one engine or recording.
+	state.BreakpointRules, state.PausedMessages = breakpoints.count()
+	return state
 }
 
 func (engine *Engine) captureState() State {
