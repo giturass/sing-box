@@ -424,6 +424,24 @@ func (e *Engine) handler(metadata Metadata, target *url.URL, transport http.Roun
 				note("Mapped destination uses sing-box routing; connection metadata describes the original client route")
 			}
 		}
+		if local == nil {
+			// A locally answered request is never sent; only its response can pause.
+			changed, err := e.pauseRequest(request, id, note)
+			if err != nil {
+				e.store.setError(id, err)
+				if errors.Is(err, errBreakpointAbort) {
+					panic(http.ErrAbortHandler)
+				}
+				e.writeError(w, request, id, "B-box: request breakpoint failed; see request details or service logs", http.StatusBadGateway)
+				return
+			}
+			if changed {
+				e.store.rewrittenRequest(id, request, originalURL.String())
+				if !sameRewriteOrigin(request.URL, &originalURL) {
+					note("Mapped destination uses sing-box routing; connection metadata describes the original client route")
+				}
+			}
+		}
 		if request.Body != nil && request.Body != http.NoBody {
 			request.Body = &tapBody{ReadCloser: request.Body, store: e.store, id: id, expected: request.ContentLength, trailers: request.Trailer, engine: e}
 		}
@@ -469,6 +487,10 @@ func (e *Engine) handler(metadata Metadata, target *url.URL, transport http.Roun
 						return nil, err
 					}
 				}
+				if err = e.pauseResponse(request, response, id, note); err != nil {
+					response.Body.Close()
+					return nil, err
+				}
 				e.store.response(id, response)
 				if response.StatusCode == http.StatusSwitchingProtocols && strings.EqualFold(response.Header.Get("Upgrade"), "websocket") {
 					body, reason, wrapErr := e.wrapWebSocket(request.Context(), request, response, requestMetadata, id)
@@ -493,7 +515,7 @@ func (e *Engine) handler(metadata Metadata, target *url.URL, transport http.Roun
 			ErrorLog:      log.New(io.Discard, "", 0),
 			ErrorHandler: func(w http.ResponseWriter, r *http.Request, err error) {
 				e.store.setError(id, err)
-				if errors.Is(err, errScriptAbort) {
+				if errors.Is(err, errScriptAbort) || errors.Is(err, errBreakpointAbort) {
 					panic(http.ErrAbortHandler)
 				}
 				e.reportError("Upstream HTTP " + metadata.Host + ": " + err.Error())
@@ -626,7 +648,9 @@ func (b *tapBody) Read(p []byte) (int, error) {
 	n, err := b.ReadCloser.Read(p)
 	if n > 0 {
 		b.read.Add(int64(n))
-		b.engine.plaintextBytes.Add(int64(n))
+		if b.engine != nil {
+			b.engine.plaintextBytes.Add(int64(n))
+		}
 		b.store.appendBody(b.id, b.response, p[:n])
 	}
 	if err == io.EOF {
