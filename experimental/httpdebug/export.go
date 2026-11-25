@@ -39,7 +39,7 @@ func (s *Store) WriteHAR(output io.Writer, query string) error {
 	page := s.Page(0, query)
 	ids := make([]string, 0, len(page.Items))
 	for _, summary := range page.Items {
-		if !summary.DomainOnly && summary.Protocol != "TLS/TCP" {
+		if !summary.DomainOnly && strings.HasPrefix(summary.Protocol, "HTTP/") {
 			ids = append(ids, summary.ID)
 		}
 	}
@@ -79,7 +79,7 @@ func (s *Store) writeHAR(output io.Writer, ids []string) error {
 				return err
 			}
 			defer snapshot.close()
-			if snapshot.DomainOnly || snapshot.Metadata.RawTCP || snapshot.Request.Protocol == "TLS/TCP" {
+			if !captureSupportsHAR(&snapshot.Exchange) {
 				return nil
 			}
 			entry, err := harEntry(snapshot)
@@ -105,16 +105,9 @@ func (s *Store) writeHAR(output io.Writer, ids []string) error {
 }
 
 func harEntry(d *bodySnapshot) (map[string]any, error) {
-	query := make([]map[string]string, 0)
-	if u, err := url.Parse(d.Request.URL); err == nil {
-		for key, values := range u.Query() {
-			for _, value := range values {
-				query = append(query, map[string]string{"name": key, "value": value})
-			}
-		}
-	}
 	request := map[string]any{"method": d.Request.Method, "url": d.Request.URL, "httpVersion": d.Request.Protocol,
-		"headers": d.Request.Headers, "_trailers": d.Request.Trailers, "queryString": query, "cookies": []any{}, "headersSize": -1, "bodySize": d.Request.BodyBytes}
+		"headers": d.Request.Headers, "_trailers": d.Request.Trailers, "queryString": harQuery(d.Request.URL),
+		"cookies": harCookies(d.Request, false), "headersSize": -1, "bodySize": d.Request.BodyBytes}
 	if d.Request.CapturedBytes > 0 {
 		content, err := harContent(d.Request, func() io.Reader { return d.reader(false) }, true)
 		if err != nil {
@@ -127,7 +120,7 @@ func harEntry(d *bodySnapshot) (map[string]any, error) {
 		return nil, err
 	}
 	response := map[string]any{"status": d.Response.Status, "statusText": http.StatusText(d.Response.Status), "httpVersion": d.Response.Protocol,
-		"headers": d.Response.Headers, "_trailers": d.Response.Trailers, "cookies": []any{}, "content": content, "redirectURL": headerValue(d.Response, "Location"),
+		"headers": d.Response.Headers, "_trailers": d.Response.Trailers, "cookies": harCookies(d.Response, true), "content": content, "redirectURL": headerValue(d.Response, "Location"),
 		"headersSize": -1, "bodySize": d.Response.BodyBytes}
 	return map[string]any{"startedDateTime": time.UnixMilli(d.StartedAt).UTC().Format(time.RFC3339Nano), "time": d.DurationMS,
 		"request": request, "response": response, "cache": map[string]any{},
@@ -137,6 +130,59 @@ func harEntry(d *bodySnapshot) (map[string]any, error) {
 			"timingAccuracy": "total-only", "requestBodyComplete": d.Request.BodyComplete, "requestBodyTruncated": d.Request.BodyTruncated,
 			"requestHeadersTruncated": d.Request.HeadersTruncated, "responseHeadersTruncated": d.Response.HeadersTruncated,
 			"requestTrailersTruncated": d.Request.TrailersTruncated, "responseTrailersTruncated": d.Response.TrailersTruncated}}, nil
+}
+
+// Parameters keep their order in the URL. One that cannot be unescaped is
+// exported as written instead of being dropped.
+func harQuery(address string) []map[string]string {
+	query := make([]map[string]string, 0)
+	u, err := url.Parse(address)
+	if err != nil {
+		return query
+	}
+	for _, part := range strings.Split(u.RawQuery, "&") {
+		if part == "" {
+			continue
+		}
+		name, value, _ := strings.Cut(part, "=")
+		if decoded, err := url.QueryUnescape(name); err == nil {
+			name = decoded
+		}
+		if decoded, err := url.QueryUnescape(value); err == nil {
+			value = decoded
+		}
+		query = append(query, map[string]string{"name": name, "value": value})
+	}
+	return query
+}
+
+func harCookies(m Message, response bool) []map[string]any {
+	cookies := make([]map[string]any, 0)
+	for _, header := range m.Headers {
+		if !response && strings.EqualFold(header.Name, "Cookie") {
+			parsed, _ := http.ParseCookie(header.Value)
+			for _, cookie := range parsed {
+				cookies = append(cookies, map[string]any{"name": cookie.Name, "value": cookie.Value})
+			}
+		} else if response && strings.EqualFold(header.Name, "Set-Cookie") {
+			cookie, err := http.ParseSetCookie(header.Value)
+			if err != nil {
+				continue
+			}
+			item := map[string]any{"name": cookie.Name, "value": cookie.Value, "httpOnly": cookie.HttpOnly, "secure": cookie.Secure}
+			if cookie.Path != "" {
+				item["path"] = cookie.Path
+			}
+			if cookie.Domain != "" {
+				item["domain"] = cookie.Domain
+			}
+			if !cookie.Expires.IsZero() {
+				item["expires"] = cookie.Expires.UTC().Format(time.RFC3339)
+			}
+			cookies = append(cookies, item)
+		}
+	}
+	return cookies
 }
 
 // Scan decoded content to establish its size and request text encoding. A
@@ -345,13 +391,27 @@ func (s *Store) WriteCurl(output io.Writer, id string) error {
 		}
 		out.WriteString("' | base64 -d | ")
 	}
-	fmt.Fprintf(out, "curl --globoff --path-as-is --request %s --url %s", quote(d.Request.Method), quote(d.Request.URL))
+	// --request HEAD would wait for a body that never arrives.
+	method := "--request " + quote(d.Request.Method)
+	if d.Request.Method == http.MethodHead {
+		method = "--head"
+	}
+	fmt.Fprintf(out, "curl --globoff --path-as-is %s --url %s", method, quote(d.Request.URL))
 	for _, h := range d.Request.Headers {
 		switch strings.ToLower(h.Name) {
-		case "content-length", "transfer-encoding", "connection", "proxy-connection":
+		case "content-length":
+			// curl sends no length for a bodiless request unless told to.
+			if d.Request.CapturedBytes > 0 || strings.TrimSpace(h.Value) != "0" {
+				continue
+			}
+		case "transfer-encoding", "connection", "proxy-connection":
 			continue
 		}
-		fmt.Fprintf(out, " \\\n  --header %s", quote(h.Name+": "+h.Value))
+		line := h.Name + ": " + h.Value
+		if h.Value == "" {
+			line = h.Name + ";" // curl's form for a header with an empty value
+		}
+		fmt.Fprintf(out, " \\\n  --header %s", quote(line))
 	}
 	if d.Request.CapturedBytes > 0 {
 		if headerValue(d.Request, "Content-Type") == "" {
