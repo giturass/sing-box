@@ -309,3 +309,38 @@ func TestBreakpointEndsWithEngine(t *testing.T) {
 		t.Fatal("a message stayed paused after its engine closed")
 	}
 }
+
+func TestBreakpointForwardsOversizedRequestBodyUnchanged(t *testing.T) {
+	type seen struct {
+		edit string
+		size int
+	}
+	requests := make(chan seen, 1)
+	origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		requests <- seen{r.Header.Get("X-Edit"), len(body)}
+	}))
+	defer origin.Close()
+	e, _ := testEngine(t, Config{})
+	recordingManager(t, e)
+	testBreakpoints(t, `{"enabled":true,"rules":[{"enabled":true,"request":true,"response":false}]}`)
+	client := debugClient(t, e, origin.Listener.Addr().String())
+	result := breakpointRequest(client, "POST", "http://example.test/upload", strings.Repeat("a", breakpointBodyLimit+1))
+	paused := waitPaused(t)
+	if paused.BodyEditable || paused.BodyBytes != 0 {
+		t.Fatalf("an oversized body is offered for editing: %+v", paused)
+	}
+	if err := ResolveBreakpoint(paused.ID, breakpointDecision(t, map[string]any{"action": "continue", "body": ""})); err == nil {
+		t.Fatal("a streamed body accepted a replacement")
+	}
+	err := ResolveBreakpoint(paused.ID, breakpointDecision(t, map[string]any{"action": "continue", "headers": []Header{{"X-Edit", "yes"}}}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := waitResult(t, result); got.err != nil || got.status != 200 {
+		t.Fatalf("resumed upload failed: %+v", got)
+	}
+	if got := <-requests; got != (seen{"yes", breakpointBodyLimit + 1}) {
+		t.Fatalf("server did not receive the whole upload: %+v", got)
+	}
+}
