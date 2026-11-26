@@ -124,6 +124,15 @@ func moduleMatch(kind, value string, depth int) moduleObject {
 		case "quic", "http", "tls", "dns":
 			return moduleObject{"protocol": value}
 		}
+	case "RULE-SET":
+		if !strings.Contains(value, "://") {
+			return moduleObject{"rule_set": value}
+		}
+	case "NETWORK-TYPE":
+		switch strings.ToLower(value) {
+		case "wifi", "cellular", "ethernet", "other":
+			return moduleObject{"network_type": strings.ToLower(value)}
+		}
 	}
 	return nil
 }
@@ -133,10 +142,10 @@ func moduleRule(line string) (moduleObject, string, bool) {
 	if !ok {
 		return nil, "", false
 	}
-	if len(parts) == 2 && strings.EqualFold(parts[0], "FINAL") && parts[1] != "" {
-		return moduleObject{}, parts[1], true
+	if len(parts) == 2 && strings.EqualFold(parts[0], "FINAL") && moduleUnquote(parts[1]) != "" {
+		return moduleObject{}, moduleUnquote(parts[1]), true
 	}
-	if len(parts) < 3 || len(parts) > 4 || parts[2] == "" {
+	if len(parts) < 3 || len(parts) > 4 || moduleUnquote(parts[2]) == "" {
 		return nil, "", false
 	}
 	kind := strings.ToUpper(parts[0])

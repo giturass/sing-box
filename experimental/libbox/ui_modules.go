@@ -233,6 +233,7 @@ func readModule(source option.ModuleOptions) moduleDescription {
 	}
 	section := ""
 	conditional := 0
+	extraBudget := 8 << 20
 	for _, raw := range lines {
 		line := strings.TrimSpace(raw)
 		directive := strings.ToLower(line)
@@ -255,17 +256,50 @@ func readModule(source option.ModuleOptions) moduleDescription {
 			section = strings.ToLower(strings.TrimSpace(line[1 : len(line)-1]))
 			continue
 		}
-		line = moduleVariable.ReplaceAllStringFunc(line, func(token string) string {
+		exceeded := false
+		expanded := moduleVariable.ReplaceAllStringFunc(line, func(token string) string {
 			if value, ok := args[token[3:len(token)-3]]; ok {
+				extra := max(0, len(value)-len(token))
+				if extra > extraBudget {
+					exceeded = true
+					return token
+				}
+				extraBudget -= extra
 				return value
 			}
 			return token
 		})
+		if exceeded {
+			result.Lines["ignored"] = append(result.Lines["ignored"], moduleLine{Text: line, Issue: "Module argument expansion is too large"})
+			continue
+		}
+		line = expanded
 		group := section
 		display := moduleLine{Text: line}
 		var err error
 		switch section {
 		case "rule":
+			if kind, _, _ := strings.Cut(line, ","); strings.EqualFold(strings.TrimSpace(kind), "URL-REGEX") {
+				fields, ok := moduleFields(line, true)
+				if !ok || len(fields) != 3 || moduleUnquote(fields[1]) == "" {
+					err = fmt.Errorf("invalid URL-REGEX rule")
+					break
+				}
+				action := map[string]string{"REJECT": "reject", "REJECT-200": "reject-200", "REJECT-DICT": "reject-dict"}[strings.ToUpper(fields[2])]
+				if action == "" {
+					err = fmt.Errorf("unsupported URL-REGEX policy")
+					break
+				}
+				entry := moduleObject{"pattern": moduleUnquote(fields[1]), "action": action}
+				var check httpdebug.RewriteConfig
+				encoded, _ := json.Marshal(moduleObject{"url_rewrite": []any{entry}})
+				err = json.Unmarshal(encoded, &check)
+				if err == nil {
+					group = "url rewrite"
+					result.values["url_rewrite"] = append(result.values["url_rewrite"], entry)
+				}
+				break
+			}
 			rule, policy, ok := moduleRule(line)
 			if !ok {
 				err = fmt.Errorf("unsupported route condition or modifier")
@@ -277,6 +311,9 @@ func readModule(source option.ModuleOptions) moduleDescription {
 			case "REJECT-DROP":
 				rule["action"] = "reject"
 				rule["method"] = "drop"
+			case "REJECT-NO-DROP":
+				rule["action"] = "reject"
+				rule["no_drop"] = true
 			default:
 				rule["outbound"] = policy
 			}

@@ -62,3 +62,10 @@ func TestUISurgeModuleDiagnosticsAndSources(t *testing.T) {
 		t.Fatal("local module read arbitrary profile file")
 	}
 }
+
+func TestUISurgeModuleHTTPAndRoutePolicies(t *testing.T) {
+	parsed := readModule(option.ModuleOptions{Content: "[Rule]\nURL-REGEX,^https://example.test/,REJECT-DICT\nURL-REGEX,other,DIRECT\nNETWORK-TYPE,wifi,REJECT-NO-DROP\nRULE-SET,https://example.test/rules,REJECT\nRULE-SET,local-rules,REJECT\nDOMAIN,example.test,\"\""})
+	if len(parsed.values["url_rewrite"]) != 1 || len(parsed.values["rules"]) != 2 || len(parsed.Lines["ignored"]) != 3 || parsed.values["rules"][0].(moduleObject)["no_drop"] != true {
+		t.Fatal(parsed)
+	}
+}
