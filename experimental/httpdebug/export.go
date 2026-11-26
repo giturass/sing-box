@@ -240,6 +240,9 @@ func harContent(message Message, raw func() io.Reader, request bool) (map[string
 	content[key] = "base64"
 	if request && text {
 		content[key] = ""
+	} else if request {
+		// HAR 1.2 gives postData no encoding field; comment is its standard place for a note.
+		content["comment"] = "Binary request body: text is Base64, as _encoding states."
 	}
 	content["text"] = harBody{open: open, size: size, text: request && text}
 	return content, nil

@@ -344,3 +344,87 @@ func TestBreakpointForwardsOversizedRequestBodyUnchanged(t *testing.T) {
 		t.Fatalf("server did not receive the whole upload: %+v", got)
 	}
 }
+
+func TestBreakpointPausesSlowResponseBodyAsStream(t *testing.T) {
+	previous := breakpointBodyWait
+	breakpointBodyWait = 50 * time.Millisecond
+	defer func() { breakpointBodyWait = previous }()
+	finish := make(chan struct{})
+	origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte("first "))
+		w.(http.Flusher).Flush()
+		<-finish
+		_, _ = w.Write([]byte("second"))
+	}))
+	defer origin.Close()
+	e, _ := testEngine(t, Config{})
+	recordingManager(t, e)
+	testBreakpoints(t, `{"enabled":true,"rules":[{"enabled":true,"request":false,"response":true}]}`)
+	client := debugClient(t, e, origin.Listener.Addr().String())
+	result := breakpointRequest(client, "GET", "http://example.test/events", "")
+	paused := waitPaused(t)
+	if paused.BodyEditable {
+		t.Fatalf("an unfinished body is offered for editing: %+v", paused)
+	}
+	if err := ResolveBreakpoint(paused.ID, breakpointDecision(t, map[string]any{"action": "continue"})); err != nil {
+		t.Fatal(err)
+	}
+	close(finish)
+	if got := waitResult(t, result); got.err != nil || got.body != "first second" {
+		t.Fatalf("streamed response changed: %+v", got)
+	}
+}
+
+type failingBody struct {
+	chunks chan string
+	closed atomic.Bool
+}
+
+func (b *failingBody) Read(p []byte) (int, error) {
+	chunk, ok := <-b.chunks
+	if !ok {
+		return 0, io.ErrUnexpectedEOF
+	}
+	return copy(p, chunk), nil
+}
+
+func (b *failingBody) Close() error {
+	b.closed.Store(true)
+	return nil
+}
+
+func TestHeldBodyReplaysAndReportsLostSource(t *testing.T) {
+	source := &failingBody{chunks: make(chan string, 2)}
+	source.chunks <- "ab"
+	source.chunks <- "cd"
+	held := holdBody(source, 1<<10)
+	select {
+	case <-held.lost:
+		t.Fatal("an open source was reported lost")
+	case <-time.After(20 * time.Millisecond):
+	}
+	close(source.chunks)
+	select {
+	case <-held.lost:
+	case <-time.After(2 * time.Second):
+		t.Fatal("a failed source was not reported")
+	}
+	data, err := io.ReadAll(held)
+	if string(data) != "abcd" || err != io.ErrUnexpectedEOF {
+		t.Fatalf("read %q, %v", data, err)
+	}
+	if _ = held.Close(); !source.closed.Load() {
+		t.Fatal("source left open")
+	}
+
+	whole := holdBody(io.NopCloser(strings.NewReader("whole")), 2)
+	<-whole.done
+	select {
+	case <-whole.lost:
+		t.Fatal("a complete source was reported lost")
+	default:
+	}
+	if data, err = io.ReadAll(whole); string(data) != "whole" || err != nil {
+		t.Fatalf("read %q, %v", data, err)
+	}
+}

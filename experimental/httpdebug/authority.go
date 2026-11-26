@@ -74,7 +74,9 @@ func ParseCA(certificate string) (*x509.Certificate, error) {
 }
 
 type authority struct {
-	mu         sync.Mutex
+	mu sync.Mutex
+	// signing serializes the platform signer without holding up cached names.
+	signing    sync.Mutex
 	issuer     *x509.Certificate
 	signer     crypto.Signer
 	leaves     map[string]*tls.Certificate
@@ -123,6 +125,35 @@ func (a *authority) leaf(host string) (*tls.Certificate, error) {
 	if !validHost(host) {
 		return nil, errors.New("invalid MITM server name")
 	}
+	if cached := a.cached(host); cached != nil {
+		return cached, nil
+	}
+	a.signing.Lock()
+	defer a.signing.Unlock()
+	// Another handshake for this name may have signed it while this one waited.
+	if cached := a.cached(host); cached != nil {
+		return cached, nil
+	}
+	now := time.Now()
+	if !now.Before(a.issuer.NotAfter) {
+		return nil, errors.New("MITM CA expired; stop capture and regenerate the CA")
+	}
+	result, err := a.sign(host, now)
+	if err != nil {
+		return nil, err
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.leaves[host] = result
+	expires := result.Leaf.NotAfter.Add(-time.Minute)
+	if a.nextExpiry.IsZero() || expires.Before(a.nextExpiry) {
+		a.nextExpiry = expires
+	}
+	return result, nil
+}
+
+// cached drops expired certificates and returns the one for host, if any.
+func (a *authority) cached(host string) *tls.Certificate {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	now := time.Now()
@@ -138,11 +169,12 @@ func (a *authority) leaf(host string) (*tls.Certificate, error) {
 		}
 	}
 	if cached := a.leaves[host]; cached != nil && cached.Leaf.NotAfter.After(now.Add(time.Minute)) {
-		return cached, nil
+		return cached
 	}
-	if !now.Before(a.issuer.NotAfter) {
-		return nil, errors.New("MITM CA expired; stop capture and regenerate the CA")
-	}
+	return nil
+}
+
+func (a *authority) sign(host string, now time.Time) (*tls.Certificate, error) {
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
 		return nil, err
@@ -179,13 +211,7 @@ func (a *authority) leaf(host string) (*tls.Certificate, error) {
 	if err != nil {
 		return nil, err
 	}
-	result := &tls.Certificate{Certificate: [][]byte{der}, PrivateKey: key, Leaf: parsed}
-	a.leaves[host] = result
-	expires := leaf.NotAfter.Add(-time.Minute)
-	if a.nextExpiry.IsZero() || expires.Before(a.nextExpiry) {
-		a.nextExpiry = expires
-	}
-	return result, nil
+	return &tls.Certificate{Certificate: [][]byte{der}, PrivateKey: key, Leaf: parsed}, nil
 }
 
 func certificateSerial() (*big.Int, error) {
