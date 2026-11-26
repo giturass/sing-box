@@ -12,12 +12,39 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/dop251/goja"
 )
 
 func routedTestEnvironment(origin *httptest.Server) scriptEnvironment {
 	return scriptEnvironment{dial: func(ctx context.Context, _ string) (net.Conn, error) {
 		return (&net.Dialer{}).DialContext(ctx, "tcp", origin.Listener.Addr().String())
 	}}
+}
+
+func TestSurgeScriptClientControlHeader(t *testing.T) {
+	vm := goja.New()
+	for _, sample := range []struct {
+		source string
+		client bool
+		valid  bool
+	}{
+		{`({"X-Surge-Skip-Scripting":false})`, true, true},
+		{`[{field:"x-surge-skip-scripting",value:"TRUE"}]`, true, true},
+		{`({"X-Surge-Skip-Scripting":"false\r\nInjected: yes"})`, true, false},
+		{`({"X-Other":false})`, true, false},
+		{`({"X-Surge-Skip-Scripting":false})`, false, false},
+		{`({"Content-Length":"42","X-Surge-Skip-Scripting":true})`, true, false},
+	} {
+		value, err := vm.RunString(sample.source)
+		if err != nil {
+			t.Fatal(err)
+		}
+		headers, err := decodeScriptHeaders(value, nil, sample.client)
+		if (err == nil) != sample.valid || len(headers) != 0 {
+			t.Errorf("headers %s (client=%t): %v, %v", sample.source, sample.client, headers, err)
+		}
+	}
 }
 
 func TestSurgeHTTPClientRunsBeyondFormerConcurrencyAndQueueLimits(t *testing.T) {

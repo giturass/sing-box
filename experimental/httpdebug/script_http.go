@@ -298,7 +298,7 @@ func parseScriptHTTPRequest(vm *goja.Runtime, stringify goja.Callable, method st
 				return options, errors.New("policy-descriptor is not supported; use policy with a configured sing-box outbound tag")
 			case "headers":
 				var err error
-				options.headers, err = decodeScriptHeaders(vm, field, nil)
+				options.headers, err = decodeScriptHeaders(field, nil, true)
 				if err != nil {
 					return options, err
 				}
