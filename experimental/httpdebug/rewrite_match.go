@@ -37,11 +37,16 @@ func validateHTTPMatchObjects(data []byte, groups ...string) error {
 		if !found {
 			continue
 		}
-		var rules []map[string]json.RawMessage
-		if err := json.Unmarshal(raw, &rules); err != nil {
+		var items []json.RawMessage
+		if err := json.Unmarshal(raw, &items); err != nil {
 			return err
 		}
-		for i, rule := range rules {
+		for i, item := range items {
+			// A rule written as a profile line carries no match object.
+			var rule map[string]json.RawMessage
+			if json.Unmarshal(item, &rule) != nil {
+				continue
+			}
 			if match, found := rule["match"]; found && bytes.Equal(bytes.TrimSpace(match), []byte("null")) {
 				return fmt.Errorf("%s[%d]: match must be an object", group, i)
 			}

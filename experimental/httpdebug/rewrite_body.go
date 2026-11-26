@@ -256,9 +256,11 @@ func (p *httpProgram) rewriteBody(phase, address string, data []byte, note func(
 			note(rule.label + ": skipped non-UTF-8 body")
 			continue
 		}
-		next, err := boundedReplace(rule.regex, string(data), rule.options.Replacement, p.bodyLimit(phase), p.regex)
-		if err != nil {
-			return nil, false, err
+		next := string(data)
+		for _, step := range rule.steps {
+			if next, err = boundedReplace(step.regex, next, step.replacement, p.bodyLimit(phase), p.regex); err != nil {
+				return nil, false, err
+			}
 		}
 		if next != string(data) {
 			changed = true

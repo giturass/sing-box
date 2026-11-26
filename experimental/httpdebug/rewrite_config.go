@@ -48,12 +48,14 @@ type HeaderRewrite struct {
 	Value       string `json:"value,omitempty"`
 	Regex       string `json:"regex,omitempty"`
 	Replacement string `json:"replacement,omitempty"`
+	line        string
 }
 
 type URLRewrite struct {
 	RewriteMatch
 	Action      string `json:"action"`
 	Replacement string `json:"replacement,omitempty"`
+	line        string
 }
 
 type MapRemote struct {
@@ -68,6 +70,8 @@ type BodyRewrite struct {
 	Regex       string  `json:"regex,omitempty"`
 	Replacement string  `json:"replacement,omitempty"`
 	JQ          *string `json:"jq,omitempty"`
+	line        string
+	more        []bodyReplace
 }
 
 type MapLocal struct {
@@ -77,6 +81,9 @@ type MapLocal struct {
 	DataType string   `json:"data_type,omitempty"`
 	Data     string   `json:"data,omitempty"`
 	Resource string   `json:"resource,omitempty"`
+	// UpdateInterval applies to a file rule whose data is a URL.
+	UpdateInterval int64 `json:"update_interval,omitempty"`
+	line           string
 }
 
 type RewriteResource struct {
@@ -109,9 +116,15 @@ type compiledRule[T any] struct {
 	pattern *rewriteRegexp
 	match   *compiledHTTPMatch
 	regex   *rewriteRegexp
+	steps   []bodyStep
 	label   string
 	jq      *gojq.Code
 	jqError error
+}
+
+type bodyStep struct {
+	regex       *rewriteRegexp
+	replacement string
 }
 
 // RewriteProgram is immutable and can be shared by concurrent HTTP/2 streams.
@@ -256,9 +269,12 @@ func CompileRewrite(c *RewriteConfig) (*RewriteProgram, error) {
 			// regexp URL selector, jq errors do not invalidate the profile.
 			item.jqError = parseErr
 		} else {
-			item.regex, err = compileRewritePattern("(?m)" + rule.Regex)
-			if err != nil {
-				return nil, fmt.Errorf("%s: %w", item.label, err)
+			for _, pair := range append([]bodyReplace{{rule.Regex, rule.Replacement}}, rule.more...) {
+				regex, err := compileRewritePattern("(?m)" + pair.regex)
+				if err != nil {
+					return nil, fmt.Errorf("%s: %w", item.label, err)
+				}
+				item.steps = append(item.steps, bodyStep{regex, pair.replacement})
 			}
 		}
 		if !rule.Disable {
@@ -294,7 +310,7 @@ func CompileRewrite(c *RewriteConfig) (*RewriteProgram, error) {
 			}
 			item.options.DataType = c.Resources[rule.Resource].DataType
 		} else if rule.DataType == "file" {
-			source, err = compileProcessingResource(rule.Data, 0, false, 0, false)
+			source, err = compileProcessingResource(rule.Data, 0, false, rule.UpdateInterval, false)
 			if err != nil {
 				return nil, fmt.Errorf("%s: %w", item.label, err)
 			}
