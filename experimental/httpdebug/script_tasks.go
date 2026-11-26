@@ -91,6 +91,20 @@ func (r *scriptTaskRunner) runManual(ctx context.Context, kind string, index int
 	return r.start(ctx, job, true, nil)
 }
 
+func (p *PreparedProcessing) RunPanel(ctx context.Context, index int, name string, automatic bool) (*ScriptTask, error) {
+	managerMu.Lock()
+	defer managerMu.Unlock()
+	if p == nil || profileProcessing != p || p.tasks == nil {
+		return nil, ErrScriptsInactive
+	}
+	job, found := p.tasks.program.tasks[scriptTaskKey{"generic", index}]
+	if !found || name == "" {
+		return nil, ErrScriptUnavailable
+	}
+	job.panelName, job.panelAuto = name, automatic
+	return p.tasks.start(ctx, job, true, nil)
+}
+
 func (r *scriptTaskRunner) start(parent context.Context, job compiledTask, manual bool, finished func()) (*ScriptTask, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -220,7 +234,14 @@ func runTaskScript(parent context.Context, job compiledTask, bodyLimit int64, en
 		func(vm *goja.Runtime, ctx context.Context) {
 			// Capture the native serializer before script globals can replace it.
 			stringify, _ = goja.AssertFunction(vm.Get("JSON").ToObject(vm).Get("stringify"))
-			if manual {
+			if job.panelName != "" {
+				trigger := "button"
+				if job.panelAuto {
+					trigger = "auto-interval"
+				}
+				_ = vm.Set("$trigger", trigger)
+				_ = vm.Set("$input", map[string]any{"purpose": "panel", "position": "policy-selection", "panelName": job.panelName})
+			} else if manual {
 				_ = vm.Set("$trigger", "editor")
 			}
 			if job.key.kind == "cron" {

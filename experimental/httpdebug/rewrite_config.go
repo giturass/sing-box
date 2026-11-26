@@ -227,9 +227,9 @@ func CompileRewrite(c *RewriteConfig) (*RewriteProgram, error) {
 			if err = validateRewriteURLTemplate(rule.Replacement, rule.Action); err != nil {
 				return nil, fmt.Errorf("%s: %w", item.label, err)
 			}
-		case "reject", "reject-200", "reject-dict":
+		case "reject", "reject-200", "reject-dict", "reject-tinygif":
 		default:
-			return nil, fmt.Errorf("%s: action must be header, 302, 307, reject, reject-200 or reject-dict", item.label)
+			return nil, fmt.Errorf("%s: action must be header, 302, 307, reject, reject-200, reject-dict or reject-tinygif", item.label)
 		}
 		if !rule.Disable {
 			p.urls = append(p.urls, item)
@@ -241,7 +241,7 @@ func CompileRewrite(c *RewriteConfig) (*RewriteProgram, error) {
 		if err != nil {
 			return nil, err
 		}
-		if err = validateURLTemplate(rule.Replacement); err != nil {
+		if err = validateURLTemplate(rule.Replacement, false); err != nil {
 			return nil, fmt.Errorf("%s: %w", item.label, err)
 		}
 		if !rule.Disable {
@@ -400,12 +400,12 @@ func decodeRewriteData(kind, value string, limit int64) ([]byte, error) {
 	return data, nil
 }
 
-func validateURLTemplate(value string) error {
+func validateURLTemplate(value string, redirect bool) error {
 	if strings.ContainsAny(value, "\r\n") || (!strings.HasPrefix(value, "http://") && !strings.HasPrefix(value, "https://")) {
 		return errors.New("replacement must be an absolute http:// or https:// URL template")
 	}
 	if !strings.Contains(value, "$") {
-		_, err := parseRewriteURL(value)
+		_, err := parseRewriteTarget(value, redirect)
 		return err
 	}
 	return nil
@@ -417,10 +417,11 @@ func validateRewriteURLTemplate(value, action string) error {
 	if action == "header" && strings.HasPrefix(value, "ws://") {
 		value = "http://" + strings.TrimPrefix(value, "ws://")
 	}
-	if action == "302" || action == "307" {
+	redirect := action == "302" || action == "307"
+	if redirect {
 		value = strings.ReplaceAll(value, gatewayPlaceholder, "192.0.2.1")
 	}
-	return validateURLTemplate(value)
+	return validateURLTemplate(value, redirect)
 }
 
 func (p *RewriteProgram) bodyLimit(phase string) int64 {
@@ -431,11 +432,15 @@ func (p *RewriteProgram) bodyLimit(phase string) int64 {
 }
 
 func parseRewriteURL(value string) (*url.URL, error) {
+	return parseRewriteTarget(value, false)
+}
+
+func parseRewriteTarget(value string, redirect bool) (*url.URL, error) {
 	u, err := url.Parse(value)
 	if err != nil {
 		return nil, err
 	}
-	if u.Opaque != "" || u.User != nil || u.Fragment != "" || (u.Scheme != "http" && u.Scheme != "https") || !validHost(normalizeHost(u.Hostname())) || strings.ContainsAny(value, "\r\n") {
+	if u.Opaque != "" || u.User != nil || (!redirect && u.Fragment != "") || (u.Scheme != "http" && u.Scheme != "https") || !validHost(normalizeHost(u.Hostname())) || strings.ContainsAny(value, "\r\n") {
 		return nil, errors.New("rewrite produced an invalid HTTP(S) URL")
 	}
 	if port := u.Port(); port != "" {

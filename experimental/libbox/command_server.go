@@ -214,7 +214,8 @@ func (s *CommandServer) StartOrReloadService(configContent string, options *Over
 	wasRunning := s.Instance() != nil
 	normalizedContent, err := RemoveUIRetiredCaptureOptions(configContent)
 	if err != nil { return err }
-	normalizedContent, err = effectiveModuleConfig(s.ctx, normalizedContent)
+	var panels []modulePanel
+	normalizedContent, err = expandModuleConfig(s.ctx, normalizedContent, &panels)
 	if err != nil { return err }
 	preparedProcessing, err := s.prepareUIProcessing(normalizedContent, options)
 	if err != nil {
@@ -236,6 +237,9 @@ func (s *CommandServer) StartOrReloadService(configContent string, options *Over
 		return E.Cause(err, "start or reload service")
 	}
 	s.activateUIProcessing(preparedProcessing, wasRunning)
+	if s.uiProcessingState != nil {
+		s.uiProcessingState.panels = panels
+	}
 	return nil
 }
 

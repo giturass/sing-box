@@ -110,6 +110,8 @@ type scriptTaskKey struct {
 
 type compiledTask struct {
 	key        scriptTaskKey
+	panelName  string
+	panelAuto  bool
 	options    GenericScript
 	label      string
 	event      string
