@@ -17,6 +17,7 @@ import (
 
 type uiProcessingState struct {
 	prepared   *httpdebug.PreparedProcessing
+	panels     []modulePanel
 	unregister func()
 }
 
@@ -46,6 +47,26 @@ func (s *CommandServer) NewUIScriptTask(kind string, index int32) (*UIScriptTask
 
 func (t *UIScriptTask) Close() { t.task.Cancel() }
 func (t *UIScriptTask) Join()  { t.task.Join() }
+
+func (s *CommandServer) NewUIModulePanelTask(moduleID, name string, index int32, automatic bool) (*UIScriptTask, error) {
+	if !uiCaptureLifecycle.TryRLock() {
+		return nil, errors.New("local service is changing during panel execution")
+	}
+	defer uiCaptureLifecycle.RUnlock()
+	if s.Instance() == nil || s.uiProcessingState == nil || s.uiProcessingRoutes == nil || index < 0 {
+		return nil, httpdebug.ErrScriptsInactive
+	}
+	for _, panel := range s.uiProcessingState.panels {
+		if panel.ModuleID == moduleID && panel.Name == name && panel.Index == int(index) && (!automatic || panel.UpdateInterval > 0) {
+			task, err := s.uiProcessingState.prepared.RunPanel(s.uiProcessingRoutes.ctx, int(index), name, automatic)
+			if err != nil {
+				return nil, err
+			}
+			return &UIScriptTask{task: task}, nil
+		}
+	}
+	return nil, httpdebug.ErrScriptUnavailable
+}
 
 func (t *UIScriptTask) Run() (string, error) {
 	result := t.task.Wait()

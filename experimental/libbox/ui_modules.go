@@ -6,11 +6,13 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"math"
 	"net/netip"
 	"net/url"
 	"path"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"unicode/utf8"
@@ -39,7 +41,59 @@ type moduleDescription struct {
 	Arguments    []moduleArgument        `json:"arguments"`
 	Lines        map[string][]moduleLine `json:"lines"`
 	HasScripts   bool                    `json:"hasScripts"`
+	Panels       []modulePanel           `json:"panels,omitempty"`
 	values       map[string][]any
+	hosts        moduleHostPatch
+}
+
+type moduleHostPatch struct {
+	insert, append, replace []string
+	invalid                 error
+}
+
+func (description *moduleDescription) addHosts(line, value string) {
+	mode := "replace"
+	for _, token := range []string{"%APPEND%", "%INSERT%"} {
+		if strings.HasPrefix(value, token) {
+			mode, value = token, strings.TrimSpace(value[len(token):])
+			break
+		}
+	}
+	hosts := []string{}
+	for _, raw := range strings.Split(value, ",") {
+		raw = strings.TrimSpace(raw)
+		if raw == "" {
+			continue
+		}
+		host, err := httpdebug.NormalizeMITMHost(raw)
+		if err != nil {
+			issue := fmt.Errorf("invalid MITM host %q: %w", raw, err)
+			description.Lines["ignored"] = append(description.Lines["ignored"], moduleLine{Text: line, Issue: issue.Error()})
+			if mode == "replace" || strings.HasPrefix(raw, "-") {
+				description.hosts.invalid = issue
+				return
+			}
+			continue
+		}
+		hosts = append(hosts, host)
+	}
+	if mode != "replace" && len(hosts) == 0 {
+		return
+	}
+	patch := &description.hosts
+	switch {
+	case mode == "replace":
+		patch.insert, patch.append, patch.replace = nil, nil, hosts
+	case mode == "%INSERT%" && patch.replace != nil:
+		patch.replace = append(hosts, patch.replace...)
+	case mode == "%APPEND%" && patch.replace != nil:
+		patch.replace = append(patch.replace, hosts...)
+	case mode == "%INSERT%":
+		patch.insert = append(hosts, patch.insert...)
+	default:
+		patch.append = append(patch.append, hosts...)
+	}
+	description.Lines["mitm"] = append(description.Lines["mitm"], moduleLine{Text: line})
 }
 
 var moduleParam = regexp.MustCompile(`^[a-z][a-z0-9-]*\s*=`)
@@ -138,7 +192,8 @@ func moduleScript(source option.ModuleOptions, line string) (string, moduleObjec
 		}
 		entry["source"] = string(body)
 	}
-	for key, value := range options {
+	for _, key := range slices.Sorted(maps.Keys(options)) {
+		value := options[key]
 		switch key {
 		case "timeout":
 			seconds, err := strconv.ParseFloat(value, 64)
@@ -231,6 +286,7 @@ func readModule(source option.ModuleOptions) moduleDescription {
 		}
 	}
 	section := ""
+	var panels []modulePanel
 	conditional := 0
 	extraBudget := 8 << 20
 	for _, raw := range lines {
@@ -283,6 +339,13 @@ func readModule(source option.ModuleOptions) moduleDescription {
 		display := moduleLine{Text: line}
 		var err error
 		switch section {
+		case "panel":
+			var panel modulePanel
+			panel, err = parseModulePanel(line)
+			if err == nil {
+				panels = append(panels, panel)
+				continue
+			}
 		case "rule":
 			if kind, _, _ := strings.Cut(line, ","); strings.EqualFold(strings.TrimSpace(kind), "URL-REGEX") {
 				fields, ok := moduleFields(line, true)
@@ -290,7 +353,7 @@ func readModule(source option.ModuleOptions) moduleDescription {
 					err = fmt.Errorf("invalid URL-REGEX rule")
 					break
 				}
-				action := map[string]string{"REJECT": "reject", "REJECT-200": "reject-200", "REJECT-DICT": "reject-dict"}[strings.ToUpper(fields[2])]
+				action := map[string]string{"REJECT": "reject", "REJECT-200": "reject-200", "REJECT-DICT": "reject-dict", "REJECT-TINYGIF": "reject-tinygif"}[strings.ToUpper(fields[2])]
 				if action == "" {
 					err = fmt.Errorf("unsupported URL-REGEX policy")
 					break
@@ -354,19 +417,8 @@ func readModule(source option.ModuleOptions) moduleDescription {
 				err = fmt.Errorf("unsupported MITM setting")
 				break
 			}
-			value = strings.TrimSpace(value)
-			key = "hosts"
-			if strings.HasPrefix(value, "%INSERT%") {
-				key = "insert"
-				value = value[8:]
-			} else {
-				value = strings.TrimPrefix(value, "%APPEND%")
-			}
-			for _, host := range strings.Split(value, ",") {
-				if host = strings.TrimSpace(host); host != "" {
-					result.values[key] = append(result.values[key], host)
-				}
-			}
+			result.addHosts(line, strings.TrimSpace(value))
+			continue
 		case "url rewrite", "body rewrite", "header rewrite", "map local":
 			key := strings.ReplaceAll(section, " ", "_")
 			var value any = line
@@ -420,6 +472,7 @@ func readModule(source option.ModuleOptions) moduleDescription {
 		}
 		result.Lines[group] = append(result.Lines[group], display)
 	}
+	result.resolvePanels(source.ID, panels)
 	return result
 }
 
@@ -455,6 +508,11 @@ func DescribeProfileSurgeModule(content, id string) (string, error) {
 				for index, line := range parsed.Lines["script"] {
 					parsed.Lines["script"][index].Index += offsets[line.Kind]
 				}
+				for index := range parsed.Panels {
+					if parsed.Panels[index].Index >= 0 {
+						parsed.Panels[index].Index += offsets["generic"]
+					}
+				}
 				data, err := json.Marshal(parsed)
 				return string(data), err
 			}
@@ -467,6 +525,10 @@ func DescribeProfileSurgeModule(content, id string) (string, error) {
 }
 
 func effectiveModuleConfig(ctx context.Context, content string) (string, error) {
+	return expandModuleConfig(ctx, content, nil)
+}
+
+func expandModuleConfig(ctx context.Context, content string, panels *[]modulePanel) (string, error) {
 	if !strings.Contains(content, "modules") && !strings.Contains(content, `\u`) {
 		return content, nil
 	}
@@ -499,9 +561,14 @@ func effectiveModuleConfig(ctx context.Context, content string) (string, error) 
 	}
 	experimental := object(root, "experimental")
 	groups := map[string][]any{}
+	var hosts moduleHostPatch
 	types := uiConfigOutboundTypes(stored)
 	direct := ""
 	ids := map[string]bool{}
+	genericOffset := 0
+	if stored.Experimental.Scripts != nil {
+		genericOffset = len(stored.Experimental.Scripts.Generic)
+	}
 	for _, source := range modules {
 		if source.ID == "" || ids[source.ID] {
 			return "", fmt.Errorf("each module must have a unique non-empty id")
@@ -511,6 +578,23 @@ func effectiveModuleConfig(ctx context.Context, content string) (string, error) 
 			continue
 		}
 		parsed := readModule(source)
+		if parsed.hosts.invalid != nil {
+			return "", fmt.Errorf("module %q: %w", source.ID, parsed.hosts.invalid)
+		}
+		if hosts.replace == nil {
+			hosts.insert = append(hosts.insert, parsed.hosts.insert...)
+			hosts.append = append(hosts.append, parsed.hosts.append...)
+			hosts.replace = parsed.hosts.replace
+		}
+		if panels != nil {
+			for _, panel := range parsed.Panels {
+				if panel.Index >= 0 {
+					panel.Index += genericOffset
+				}
+				*panels = append(*panels, panel)
+			}
+			genericOffset += len(parsed.values["generic"])
+		}
 		for _, item := range parsed.values["rules"] {
 			rule := item.(moduleObject)
 			target, _ := rule["outbound"].(string)
@@ -533,7 +617,7 @@ func effectiveModuleConfig(ctx context.Context, content string) (string, error) 
 		}
 	}
 	for key, values := range groups {
-		if len(values) == 0 || key == "hosts" || key == "insert" {
+		if len(values) == 0 {
 			continue
 		}
 		var parent moduleObject
@@ -557,10 +641,15 @@ func effectiveModuleConfig(ctx context.Context, content string) (string, error) 
 			parent[key] = append(values, existing...)
 		}
 	}
-	if len(groups["insert"])+len(groups["hosts"]) > 0 {
+	if hosts.replace != nil || len(hosts.insert)+len(hosts.append) > 0 {
 		mitm := object(experimental, "mitm")
-		existing, _ := mitm["hosts"].([]any)
-		mitm["hosts"] = append(append(groups["insert"], existing...), groups["hosts"]...)
+		combined := append([]string{}, hosts.insert...)
+		if hosts.replace != nil {
+			combined = append(combined, hosts.replace...)
+		} else if stored.Experimental.MITM != nil {
+			combined = append(combined, stored.Experimental.MITM.Hosts...)
+		}
+		mitm["hosts"] = append(combined, hosts.append...)
 	}
 	data, err = json.Marshal(root)
 	return string(data), err

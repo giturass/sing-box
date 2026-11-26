@@ -16,6 +16,14 @@ type mitmHost struct {
 	exclude      bool
 }
 
+func NormalizeMITMHost(value string) (string, error) {
+	rule, err := parseMITMHost(value)
+	if err != nil {
+		return "", err
+	}
+	return rule.String(), nil
+}
+
 func parseMITMHost(value string) (mitmHost, error) {
 	value = strings.TrimSpace(value)
 	rule := mitmHost{port: 443, exclude: strings.HasPrefix(value, "-")}

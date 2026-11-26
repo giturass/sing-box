@@ -8,6 +8,78 @@ import (
 	"github.com/sagernet/sing-box/option"
 )
 
+func TestUIModulePanels(t *testing.T) {
+	const declaration = `[Panel]
+Static = title="Title, text",content="One\nTwo",style=info
+Dynamic = script-name=helper, update-interval=60
+Missing = script-name=absent
+Dynamic = title=Duplicate
+Invalid = title=X, style=unsupported
+[Script]
+helper = script-path=helper.js`
+	module := option.ModuleOptions{ID: "panels", Enabled: true, Content: declaration, Attachments: map[string]string{"helper.js": "JGRvbmUoKTs="}}
+	parsed := readModule(module)
+	if len(parsed.Panels) != 2 || len(parsed.Lines["ignored"]) != 3 || parsed.Panels[0].Index != -1 || parsed.Panels[0].Title != "Title, text" || parsed.Panels[0].Content != "One\nTwo" || parsed.Panels[0].Style != "info" || parsed.Panels[1].UpdateInterval != 60 {
+		t.Fatal(parsed)
+	}
+	prior := module
+	prior.ID, prior.Content = "earlier", "[Script]\nother = script-path=helper.js"
+	disabled := prior
+	disabled.ID, disabled.Enabled = "off", false
+	data, err := json.Marshal(moduleObject{"experimental": moduleObject{"scripts": moduleObject{"generic": []moduleObject{{"name": "base", "source": "$done()"}}}, "modules": []option.ModuleOptions{prior, disabled, module}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	list, err := DescribeProfileSurgePanels(string(data))
+	var panels []modulePanel
+	if err != nil || json.Unmarshal([]byte(list), &panels) != nil || len(panels) != 2 || panels[0].Index != -1 || panels[1].Index != 2 || panels[1].ModuleID != "panels" {
+		t.Fatal(list, err)
+	}
+	details, err := DescribeProfileSurgeModule(string(data), "panels")
+	if err != nil || json.Unmarshal([]byte(details), &parsed) != nil || parsed.Panels[1].Index != 2 {
+		t.Fatal(details, err)
+	}
+}
+
+func TestUIModuleHostScope(t *testing.T) {
+	for _, sample := range []struct {
+		lines, want string
+		ignored     int
+		invalid     bool
+	}{
+		{"hostname = %APPEND% static.test/path, good.test", "base.test,good.test", 1, false},
+		{"hostname = %APPEND% static.test/path", "base.test", 1, false},
+		{"hostname = %INSERT% first.test\nhostname = %APPEND% last.test", "first.test,base.test,last.test", 0, false},
+		{"hostname = %APPEND% discarded.test\nhostname = replaced.test\nhostname = %INSERT% first.test", "first.test,replaced.test", 0, false},
+		{"hostname =", "", 0, false},
+		{"hostname = %APPEND% *, -secret.test/path", "", 1, true},
+		{"hostname = broken.test/path", "", 1, true},
+	} {
+		module := option.ModuleOptions{ID: "scope", Enabled: true, Content: "[MITM]\n" + sample.lines}
+		if got := len(readModule(module).Lines["ignored"]); got != sample.ignored {
+			t.Fatalf("%s: ignored %d", sample.lines, got)
+		}
+		data, err := json.Marshal(moduleObject{"experimental": moduleObject{"mitm": moduleObject{"hosts": []string{"base.test"}}, "modules": []option.ModuleOptions{module}}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		result, err := effectiveModuleConfig(baseContext(nil), string(data))
+		if sample.invalid {
+			if err == nil {
+				t.Fatal("malformed scope admitted:", sample.lines)
+			}
+			continue
+		}
+		if err != nil {
+			t.Fatal(sample.lines, err)
+		}
+		options, err := parseConfig(baseContext(nil), result)
+		if err != nil || strings.Join(options.Experimental.MITM.Hosts, ",") != sample.want {
+			t.Fatal(sample.lines, result, err)
+		}
+	}
+}
+
 func TestUISurgeModuleLifecycle(t *testing.T) {
 	module := option.ModuleOptions{ID: "one", Enabled: true, Content: "#!name=Example\n#!arguments=site:default.test\n[Rule]\nDOMAIN,{{{site}}},DIRECT\nAND,((DOMAIN-SUFFIX,example.test),(DEST-PORT,80-90)),REJECT-DROP\n[MITM]\nhostname = %INSERT% first.test\n[URL Rewrite]\n^https://example.test/ - reject\n[Script]\nhelper = type=generic,script-path=helper.js", Arguments: map[string]string{"site": "one.test"}, Attachments: map[string]string{"helper.js": "JGRvbmUoKTs="}}
 	profile := func() string {

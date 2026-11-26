@@ -183,9 +183,13 @@ func (p *httpProgram) request(request *http.Request, id, address string, note fu
 			return localRewriteResponse(request, http.StatusOK, http.Header{"Content-Type": {"text/plain; charset=utf-8"}}, nil), nil
 		case "reject-dict":
 			return localRewriteResponse(request, http.StatusOK, http.Header{"Content-Type": {"application/json"}}, []byte("{}")), nil
+		case "reject-tinygif":
+			const transparentPixel = "GIF89a\x01\x00\x01\x00\x80\x00\x00\x00\x00\x00\xff\xff\xff!\xf9\x04\x01\x00\x00\x00\x00,\x00\x00\x00\x00\x01\x00\x01\x00\x00\x02\x02\x44\x01\x00;"
+			return localRewriteResponse(request, http.StatusOK, http.Header{"Content-Type": {"image/gif"}}, []byte(transparentPixel)), nil
 		}
 		replacement := rule.options.Replacement
-		if rule.options.Action != "header" && strings.Contains(replacement, gatewayPlaceholder) {
+		redirect := rule.options.Action != "header"
+		if redirect && strings.Contains(replacement, gatewayPlaceholder) {
 			gateway := ""
 			if p.environment.gateway != nil {
 				gateway = p.environment.gateway()
@@ -210,14 +214,18 @@ func (p *httpProgram) request(request *http.Request, id, address string, note fu
 		if rule.options.Action == "header" && strings.HasPrefix(next, "ws://") {
 			next = "http://" + strings.TrimPrefix(next, "ws://")
 		}
-		target, err := parseRewriteURL(next)
+		target, err := parseRewriteTarget(next, redirect)
 		if err != nil {
 			note(rule.label + ": invalid rewritten URL discarded: " + err.Error())
 			break
 		}
-		if rule.options.Action != "header" {
+		if redirect {
 			status, _ := strconv.Atoi(rule.options.Action)
-			return localRewriteResponse(request, status, http.Header{"Location": []string{target.String()}}, nil), nil
+			location := target.String()
+			if target.Fragment == "" && strings.HasSuffix(next, "#") {
+				location += "#"
+			}
+			return localRewriteResponse(request, status, http.Header{"Location": []string{location}}, nil), nil
 		}
 		request.URL, request.Host = target, target.Host
 		break

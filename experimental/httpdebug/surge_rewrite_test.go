@@ -146,6 +146,42 @@ func TestSurgeURLCandidatesWebSocketGatewayAndInvalidTarget(t *testing.T) {
 	}
 }
 
+func TestSurgeRedirectFragments(t *testing.T) {
+	for _, test := range []struct {
+		action, template, location string
+		status                     int
+	}{
+		{"302", "https://example.test/#part%2Ftwo", "https://example.test/#part%2Ftwo", 302},
+		{"307", "https://example.test/view?q=x#text=$1", "https://example.test/view?q=x#text=term", 307},
+		{"302", "https://example.test/#", "https://example.test/#", 302},
+	} {
+		rule := URLRewrite{RewriteMatch: RewriteMatch{Pattern: "^http://from.test/(.*)$"}, Action: test.action, Replacement: test.template}
+		data, err := json.Marshal(RewriteConfig{URLRewrite: []URLRewrite{rule}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		program := rewriteProgram(t, string(data))
+		request := httptest.NewRequest("GET", "http://from.test/term", nil)
+		response, err := program.request(request, "test", request.URL.String(), func(string) {})
+		if err != nil || response == nil {
+			t.Fatalf("redirect %q did not produce a response: %v", test.template, err)
+		}
+		response.Body.Close()
+		if response.StatusCode != test.status || response.Header.Get("Location") != test.location {
+			t.Fatalf("got %d %q, want %d %q", response.StatusCode, response.Header.Get("Location"), test.status, test.location)
+		}
+	}
+	if err := validateRewriteURLTemplate("https://example.test/#client", "header"); err == nil {
+		t.Fatal("header rewrites must remain server-side URLs")
+	}
+	if _, err := parseRewriteURL("https://example.test/#client"); err == nil {
+		t.Fatal("server-side fetches must not accept a fragment")
+	}
+	if err := validateRewriteURLTemplate("https://user@example.test/#client", "302"); err == nil {
+		t.Fatal("redirects must still reject userinfo")
+	}
+}
+
 func TestSurgeJQBodyRulesAndFailurePreservation(t *testing.T) {
 	for _, test := range []struct{ expression, input, want, note string }{
 		{`.id += 1 | .ok = true`, `{"id":9007199254740993}`, `{"id":9007199254740994,"ok":true}`, ""},
