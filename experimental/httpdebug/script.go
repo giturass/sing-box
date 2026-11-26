@@ -94,9 +94,9 @@ func runHTTPScript(request *http.Request, response *http.Response, script *compi
 				}
 				_ = vm.Set("$response", value)
 			}
-		}, func(vm *goja.Runtime, value goja.Value) error {
+		}, func(_ *goja.Runtime, value goja.Value) error {
 			var err error
-			result, err = decodeScriptResult(vm, value, request, response, script.options)
+			result, err = decodeScriptResult(value, request, response, script.options)
 			return err
 		}, info)
 	if err == nil {
@@ -133,6 +133,7 @@ func executeScript(parent context.Context, program *goja.Program, label, kind st
 	running.Add(1)
 	defer running.Add(-1)
 	vm := goja.New()
+	_ = vm.Set("$environment", map[string]string{"surge-version": "B-box"})
 	stop := context.AfterFunc(ctx, func() { vm.Interrupt(ctx.Err()) })
 	defer stop()
 	if argument != "" {
@@ -266,7 +267,7 @@ func scriptBodyValue(vm *goja.Runtime, data []byte, binary bool) any {
 
 func bytesClone(value []byte) []byte { return append([]byte{}, value...) }
 
-func decodeScriptResult(vm *goja.Runtime, value goja.Value, request *http.Request, response *http.Response, options HTTPScript) (scriptResult, error) {
+func decodeScriptResult(value goja.Value, request *http.Request, response *http.Response, options HTTPScript) (scriptResult, error) {
 	var result scriptResult
 	if missingScriptValue(value) {
 		return result, nil
@@ -332,7 +333,7 @@ func decodeScriptResult(vm *goja.Runtime, value goja.Value, request *http.Reques
 			original = response.Header
 		}
 		var err error
-		result.headers, err = decodeScriptHeaders(vm, field, original)
+		result.headers, err = decodeScriptHeaders(field, original, false)
 		if err != nil {
 			return result, err
 		}
@@ -366,7 +367,7 @@ func decodeScriptResult(vm *goja.Runtime, value goja.Value, request *http.Reques
 		}
 		headers := make(http.Header)
 		if field = mock.Get("headers"); !missingScriptValue(field) {
-			headers, err = decodeScriptHeaders(vm, field, nil)
+			headers, err = decodeScriptHeaders(field, nil, false)
 			if err != nil {
 				return result, err
 			}
@@ -458,7 +459,7 @@ func decodeScriptBody(value goja.Value, binary bool, limit int64, leases ...*bod
 	return data, nil
 }
 
-func decodeScriptHeaders(vm *goja.Runtime, value goja.Value, original http.Header) (http.Header, error) {
+func decodeScriptHeaders(value goja.Value, original http.Header, scriptClient bool) (http.Header, error) {
 	object, ok := value.(*goja.Object)
 	if !ok {
 		return nil, errors.New("script headers must be an object or array")
@@ -467,6 +468,17 @@ func decodeScriptHeaders(vm *goja.Runtime, value goja.Value, original http.Heade
 	add := func(name string, value goja.Value) error {
 		if missingScriptValue(value) {
 			return errors.New("missing script header value")
+		}
+		if scriptClient && strings.EqualFold(name, "X-Surge-Skip-Scripting") {
+			switch value.ExportType() {
+			case reflect.TypeFor[bool]():
+				return nil
+			case reflect.TypeFor[string]():
+				if strings.EqualFold(value.String(), "true") || strings.EqualFold(value.String(), "false") {
+					return nil
+				}
+			}
+			return errors.New("X-Surge-Skip-Scripting must be true or false")
 		}
 		if value.ExportType() != reflect.TypeFor[string]() {
 			return errors.New("script header value must be a string")
