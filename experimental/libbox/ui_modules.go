@@ -273,7 +273,13 @@ func readModule(source option.ModuleOptions) moduleDescription {
 			result.Lines["ignored"] = append(result.Lines["ignored"], moduleLine{Text: line, Issue: "Module argument expansion is too large"})
 			continue
 		}
-		line = expanded
+		if section == "script" {
+			result.HasScripts = true
+		}
+		line = strings.TrimSpace(expanded)
+		if line == "" || strings.HasPrefix(line, "#") || strings.HasPrefix(line, ";") || strings.HasPrefix(line, "//") {
+			continue
+		}
 		group := section
 		display := moduleLine{Text: line}
 		var err error
@@ -393,7 +399,6 @@ func readModule(source option.ModuleOptions) moduleDescription {
 				}
 			}
 		case "script":
-			result.HasScripts = true
 			var kind string
 			var entry moduleObject
 			kind, entry, err = moduleScript(source, line)

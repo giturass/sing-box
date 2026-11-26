@@ -69,3 +69,14 @@ func TestUISurgeModuleHTTPAndRoutePolicies(t *testing.T) {
 		t.Fatal(parsed)
 	}
 }
+
+func TestUISurgeModuleParameterCommentDoesNotActivateScript(t *testing.T) {
+	source := option.ModuleOptions{Content: "#!arguments=prefix://\n[Script]\n{{{prefix}}}helper=type=generic,script-path=helper.js", Attachments: map[string]string{"helper.js": "JGRvbmUoKTs="}}
+	if parsed := readModule(source); !parsed.HasScripts || len(parsed.values["generic"]) != 0 {
+		t.Fatal(parsed)
+	}
+	source.Arguments = map[string]string{"prefix": ""}
+	if parsed := readModule(source); len(parsed.values["generic"]) != 1 {
+		t.Fatal(parsed)
+	}
+}
