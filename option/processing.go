@@ -48,3 +48,17 @@ func (o ScriptsOptions) DescribeSchema(builder schema.Builder) (*schema.Node, er
 	}
 	return node, nil
 }
+
+// ModuleOptions holds one Surge module beside the profile it extends. The
+// profile keeps the module text; libbox adds what an enabled module contributes
+// when the profile is checked or started, and never writes it back.
+type ModuleOptions struct {
+	ID        string            `json:"id,omitempty"`
+	Name      string            `json:"name,omitempty"`
+	URL       string            `json:"url,omitempty"`
+	Enabled   bool              `json:"enabled,omitempty"`
+	Content   string            `json:"content,omitempty"`
+	Arguments map[string]string `json:"arguments,omitempty"`
+	Attachments map[string]string `json:"attachments,omitempty"`
+	UpdatedAt int64             `json:"updated_at,omitempty"`
+}

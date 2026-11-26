@@ -60,6 +60,8 @@ func ParseConfig(configContent string) error {
 
 func CheckConfig(configContent string) error {
 	ctx := baseContext(nil)
+	configContent, err := effectiveModuleConfig(ctx, configContent)
+	if err != nil { return err }
 	options, err := parseConfig(ctx, configContent)
 	if err != nil {
 		return err
