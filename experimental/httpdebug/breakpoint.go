@@ -2,6 +2,7 @@ package httpdebug
 
 import (
 	"bytes"
+	"context"
 	"crypto/rand"
 	"encoding/base64"
 	"encoding/json"
@@ -22,6 +23,9 @@ const (
 	maxBreakpointRules  = 64
 	maxPausedMessages   = 64
 )
+
+// A body that has not arrived in this time pauses as a stream that cannot be edited.
+var breakpointBodyWait = 5 * time.Second
 
 var errBreakpointAbort = errors.New("HTTP exchange aborted at breakpoint")
 
@@ -119,6 +123,7 @@ type PausedMessage struct {
 	Body         string   `json:"body,omitempty"`
 	body         []byte
 	decision     chan BreakpointDecision
+	ctx          context.Context
 }
 
 // BreakpointDecision resumes or aborts a paused message. Absent fields keep the
@@ -220,7 +225,9 @@ func ResolveBreakpoint(id, content string) error {
 	breakpoints.mu.Lock()
 	defer breakpoints.mu.Unlock()
 	message := breakpoints.paused[id]
-	if message == nil {
+	// A message whose client has gone is about to leave the list; a decision
+	// for it would be reported as applied and then dropped.
+	if message == nil || message.ctx != nil && message.ctx.Err() != nil {
 		return errors.New("this message is no longer paused")
 	}
 	if err := decision.validate(message); err != nil {
@@ -293,7 +300,7 @@ func validMessageHeaders(headers []Header) error {
 func (m *PausedMessage) public(body bool) PausedMessage {
 	value := *m
 	value.Headers = append([]Header{}, m.Headers...)
-	value.body, value.decision = nil, nil
+	value.body, value.decision, value.ctx = nil, nil, nil
 	if body && m.BodyEditable {
 		value.Body = base64.StdEncoding.EncodeToString(m.body)
 	}
@@ -350,7 +357,8 @@ func (e *Engine) breakpoint(response bool, request *http.Request, id string) boo
 }
 
 // hold blocks until the user decides, the client gives up, or this engine ends.
-func (e *Engine) hold(request *http.Request, message *PausedMessage, note func(string)) (BreakpointDecision, bool, error) {
+func (e *Engine) hold(request *http.Request, message *PausedMessage, held *heldBody, note func(string)) (BreakpointDecision, bool, error) {
+	message.ctx = request.Context()
 	if !breakpoints.add(message) {
 		note("Breakpoint skipped: too many paused messages")
 		return BreakpointDecision{}, false, nil
@@ -362,24 +370,60 @@ func (e *Engine) hold(request *http.Request, message *PausedMessage, note func(s
 		return BreakpointDecision{}, false, nil
 	}
 	note("Paused at " + message.Phase + " breakpoint")
+	// Only a request watches its body: a response that fails upstream is still
+	// forwarded as far as it arrived.
+	var lost chan struct{}
+	if held != nil && message.Phase == "request" {
+		lost = held.lost
+	}
+	var err error
 	select {
 	case decision := <-message.decision:
 		return decision, true, nil
 	case <-request.Context().Done():
-		return BreakpointDecision{}, false, request.Context().Err()
+		err = request.Context().Err()
+	case <-lost:
+		err = errors.New("client closed the request at breakpoint")
 	case <-e.ctx.Done():
-		return BreakpointDecision{}, false, errors.New("local service stopped at breakpoint")
+		err = errors.New("local service stopped at breakpoint")
+	}
+	// A decision that was accepted at the same moment has been reported as applied.
+	select {
+	case decision := <-message.decision:
+		return decision, true, nil
+	default:
+		return BreakpointDecision{}, false, err
 	}
 }
 
-func pausedBody(request *http.Request, header http.Header, body *io.ReadCloser, response bool) ([]byte, bool, error) {
+// pausedBody returns the decoded body when it can be edited. Any other body
+// is left to stream through the returned reader.
+func pausedBody(request *http.Request, header http.Header, body *io.ReadCloser, response bool) ([]byte, bool, *heldBody, error) {
 	if response && request.Method == http.MethodHead {
-		return nil, false, nil
+		return nil, false, nil, nil
 	}
-	if !bodyEligible(header, func(string) {}, false) {
-		return nil, false, nil
+	eligible := bodyEligible(header, func(string) {}, false)
+	var held *heldBody
+	if *body != nil && *body != http.NoBody {
+		held = holdBody(*body, breakpointBodyLimit)
+		*body = held
+		if eligible {
+			wait := time.NewTimer(breakpointBodyWait)
+			defer wait.Stop()
+			select {
+			case <-held.done:
+			case <-wait.C:
+				eligible = false
+			case <-request.Context().Done():
+				return nil, false, held, request.Context().Err()
+			}
+		}
 	}
-	return readRewriteBody(request.Context(), body, contentEncoding(header), breakpointBodyLimit, true, func(string) {})
+	if !eligible {
+		return nil, false, held, nil
+	}
+	data, editable, err := readRewriteBody(request.Context(), body, contentEncoding(header), breakpointBodyLimit, true, func(string) {})
+	return data, editable, held, err
 }
 
 func editedHeaders(original http.Header, headers []Header) http.Header {
@@ -406,14 +450,14 @@ func (e *Engine) pauseRequest(request *http.Request, id string, note func(string
 	if !e.breakpoint(false, request, id) {
 		return false, nil
 	}
-	body, editable, err := pausedBody(request, request.Header, &request.Body, false)
+	body, editable, held, err := pausedBody(request, request.Header, &request.Body, false)
 	if err != nil {
 		return false, err
 	}
 	headers, _ := captureHeaders(request.Header, "")
 	message := &PausedMessage{ExchangeID: id, Phase: "request", Method: request.Method, URL: request.URL.String(),
 		Headers: headers, BodyEditable: editable, BodyBytes: int64(len(body)), body: body}
-	decision, decided, err := e.hold(request, message, note)
+	decision, decided, err := e.hold(request, message, held, note)
 	if err != nil || !decided {
 		return false, err
 	}
@@ -455,14 +499,14 @@ func (e *Engine) pauseResponse(request *http.Request, response *http.Response, i
 	if response.StatusCode == http.StatusSwitchingProtocols || !e.breakpoint(true, request, id) {
 		return nil
 	}
-	body, editable, err := pausedBody(request, response.Header, &response.Body, true)
+	body, editable, held, err := pausedBody(request, response.Header, &response.Body, true)
 	if err != nil {
 		return err
 	}
 	headers, _ := captureHeaders(response.Header, "")
 	message := &PausedMessage{ExchangeID: id, Phase: "response", Method: request.Method, URL: request.URL.String(),
 		Status: response.StatusCode, Headers: headers, BodyEditable: editable, BodyBytes: int64(len(body)), body: body}
-	decision, decided, err := e.hold(request, message, note)
+	decision, decided, err := e.hold(request, message, held, note)
 	if err != nil || !decided {
 		return err
 	}
