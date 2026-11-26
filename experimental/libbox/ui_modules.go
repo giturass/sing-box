@@ -17,7 +17,6 @@ import (
 
 	"github.com/sagernet/sing-box/experimental/httpdebug"
 	"github.com/sagernet/sing-box/option"
-	sjson "github.com/sagernet/sing/common/json"
 )
 
 type moduleLine struct {
@@ -480,7 +479,7 @@ func effectiveModuleConfig(ctx context.Context, content string) (string, error) 
 	}
 	modules := stored.Experimental.Modules
 	stored.Experimental.Modules = nil
-	data, err := sjson.MarshalContext(ctx, &stored)
+	data, err := stored.MarshalJSONContext(ctx)
 	if err != nil {
 		return "", err
 	}

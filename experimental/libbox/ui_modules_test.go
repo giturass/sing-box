@@ -51,6 +51,49 @@ func TestUISurgeModuleLifecycle(t *testing.T) {
 	}
 }
 
+func TestUISurgeModuleCommentedProfile(t *testing.T) {
+	const pattern = `^https://example.test/path//asset`
+	content := `// b-box-local-nodes: ["Local"]
+{
+  /* base settings */
+  "outbounds": [` + uiNodeTestNode("Local", "192.0.2.1") + `],
+  "experimental": {
+    "http_rewrite": {"max_body_bytes": 9007199254740993},
+    "modules": [
+      {"id":"on","enabled":true,"content":"[URL Rewrite]\n` + pattern + ` - reject"},
+      {"id":"off","enabled":false,"content":"[URL Rewrite]\n^https://disabled.test/ - reject"}
+    ]
+  }
+}`
+	if err := CheckConfig(content); err != nil {
+		t.Fatal(err)
+	}
+	formatted, err := FormatConfig(content)
+	if err != nil {
+		t.Fatal(err)
+	}
+	uiNodeTestLocal(t, formatted.Value, "Local")
+	if !strings.Contains(formatted.Value, `"modules"`) || !strings.Contains(formatted.Value, pattern+` - reject`) || strings.Contains(formatted.Value, `"url_rewrite"`) {
+		t.Fatalf("formatted profile changed module storage: %s", formatted.Value)
+	}
+	ctx := baseContext(nil)
+	expanded, err := effectiveModuleConfig(ctx, formatted.Value)
+	if err != nil {
+		t.Fatal(err)
+	}
+	options, err := parseConfig(ctx, expanded)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rewrite := options.Experimental.HTTPRewrite
+	if rewrite.MaxBodyBytes != 9007199254740993 || len(rewrite.URLRewrite) != 1 || rewrite.URLRewrite[0].Pattern != pattern {
+		t.Fatalf("incorrect effective settings: %s", expanded)
+	}
+	if err := CheckConfig(strings.Replace(content, "/* base settings */", "/", 1)); err == nil {
+		t.Fatal("accepted a bare slash outside a string")
+	}
+}
+
 func TestUISurgeModuleDiagnosticsAndSources(t *testing.T) {
 	source := option.ModuleOptions{URL: "https://example.test/modules/one.sgmodule", Content: "[Rule]\nOR,((DOMAIN,ok.test),(UNSUPPORTED,other)),REJECT\nIP-CIDR,192.0.2.0/24,REJECT,no-resolve\n[Script]\njob = type=generic,script-path=job.js\nother = type=generic,script-path=file:///private.js\n[Host]\na.test = 192.0.2.1"}
 	parsed := readModule(source)
