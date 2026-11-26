@@ -8,8 +8,12 @@ import (
 	"fmt"
 	"io"
 	"math"
+	"sync"
 	"unicode/utf8"
 )
+
+// Frames are copied through shared chunks instead of one allocation per frame.
+var webSocketChunks = sync.Pool{New: func() any { return new([32 * 1024]byte) }}
 
 const (
 	webSocketContinuation = 0
@@ -107,7 +111,8 @@ func readWebSocketFrame(reader io.Reader, client, compression bool) (webSocketFr
 // wire receives the original masked bytes; payload receives decoded frame bytes.
 // Both destinations are optional, and errors cannot silently lose payload bytes.
 func readWebSocketPayload(ctx context.Context, reader io.Reader, frame webSocketFrame, wire, payload io.Writer) error {
-	buffer := make([]byte, 32*1024)
+	buffer := webSocketChunks.Get().(*[32 * 1024]byte)
+	defer webSocketChunks.Put(buffer)
 	for offset := int64(0); offset < frame.length; {
 		if err := ctx.Err(); err != nil {
 			return err
@@ -201,7 +206,8 @@ func writeWebSocketFrame(ctx context.Context, writer io.Writer, opcode int, fina
 	if err := writeWebSocketBytes(writer, header[:size]); err != nil {
 		return err
 	}
-	buffer := make([]byte, 32*1024)
+	buffer := webSocketChunks.Get().(*[32 * 1024]byte)
+	defer webSocketChunks.Put(buffer)
 	for offset := int64(0); offset < length; {
 		if err := ctx.Err(); err != nil {
 			return err

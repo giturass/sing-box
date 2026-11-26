@@ -194,7 +194,7 @@ func (e *Engine) beginStreamMessage(metadata Metadata, kind, direction string, o
 	} else {
 		request.Header.Set("Content-Type", "application/octet-stream")
 	}
-	id := e.beginRecording(metadata, request)
+	id := e.beginRecord(metadata, request, true)
 	if id != "" {
 		e.store.response(id, &http.Response{Proto: protocol, Header: request.Header.Clone(), ContentLength: -1,
 			Body: io.NopCloser(bytes.NewReader(nil))})

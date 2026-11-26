@@ -611,17 +611,20 @@ func (e *Engine) Observe(metadata Metadata, protocol string) {
 		return
 	}
 	e.mu.Lock()
-	defer e.mu.Unlock()
-	if e.closed {
-		return
-	}
+	closed := e.closed
+	e.mu.Unlock()
 	config := e.recording.Load()
-	if config == nil || !config.ExtractHosts || !config.candidate(metadata) {
+	if closed || config == nil || !config.ExtractHosts || !config.candidate(metadata) {
 		return
 	}
 	request := &http.Request{Method: "TLS", Proto: protocol, Header: make(http.Header),
 		URL: &url.URL{Scheme: "https", Host: net.JoinHostPort(metadata.Host, strconv.Itoa(int(metadata.Port)))}}
-	id := e.store.begin(metadata, request, config.BodyLimit)
+	// The observation is written once, by finish, outside the engine lock.
+	record := e.store.add(metadata, request, config.BodyLimit, true)
+	if record == nil {
+		return
+	}
+	id := record.ID
 	e.store.domainOnly(id)
 	if metadata.ProcessingReason != "" {
 		e.store.addNote(id, metadata.ProcessingReason)

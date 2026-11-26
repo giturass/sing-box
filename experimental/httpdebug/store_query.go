@@ -51,6 +51,38 @@ func (q CaptureQuery) validate(paged bool) error {
 	return nil
 }
 
+// searchText is fixed once a record completes, so a query lowers each saved
+// record only once.
+func (r *Exchange) searchText() string {
+	if r.search != "" {
+		return r.search
+	}
+	text := strings.ToLower(strings.Join([]string{
+		r.ID, r.Metadata.ConnectionID, r.Request.URL, r.OriginalURL, r.Request.Method,
+		r.Request.Protocol, strconv.Itoa(r.Response.Status), strings.Join(r.Metadata.Packages, ", "),
+		r.Metadata.Source, r.Metadata.Destination, r.Metadata.Inbound, r.Metadata.Outbound,
+		r.Metadata.Rule, r.Error,
+	}, " "))
+	if r.Complete {
+		r.search = text
+	}
+	return text
+}
+
+// lowered returns the query with its parent fields ready for matching words.
+func (q CaptureQuery) lowered(words []string) CaptureQuery {
+	if len(words) == 0 || len(q.Parents) == 0 {
+		return q
+	}
+	parents := make(map[string]string, len(q.Parents))
+	for id, text := range q.Parents {
+		parents[id] = strings.ToLower(text)
+	}
+	q.Parents = parents
+	return q
+}
+
+// matches expects a lowered query and runs under the index lock.
 func (q CaptureQuery) matches(r *Exchange, words []string) bool {
 	if q.ConnectionID != "" && r.Metadata.ConnectionID != q.ConnectionID {
 		return false
@@ -62,14 +94,10 @@ func (q CaptureQuery) matches(r *Exchange, words []string) bool {
 	if len(words) == 0 {
 		return true
 	}
-	text := strings.ToLower(strings.Join([]string{
-		r.ID, r.Metadata.ConnectionID, r.Request.URL, r.OriginalURL, r.Request.Method,
-		r.Request.Protocol, strconv.Itoa(r.Response.Status), strings.Join(r.Metadata.Packages, ", "),
-		r.Metadata.Source, r.Metadata.Destination, r.Metadata.Inbound, r.Metadata.Outbound,
-		r.Metadata.Rule, r.Error, q.Parents[r.Metadata.ConnectionID],
-	}, " "))
+	// A word holds no space, so it never spans the record and its parent.
+	text, parent := r.searchText(), q.Parents[r.Metadata.ConnectionID]
 	for _, word := range words {
-		if !strings.Contains(text, word) {
+		if !strings.Contains(text, word) && !strings.Contains(parent, word) {
 			return false
 		}
 	}
@@ -128,6 +156,7 @@ func (s *Store) Query(q CaptureQuery) (QueryPage, error) {
 		return QueryPage{}, err
 	}
 	words := strings.Fields(strings.ToLower(q.Query))
+	q = q.lowered(words)
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	page := QueryPage{
@@ -191,6 +220,7 @@ func (s *Store) SelectHAR(q CaptureQuery) ([]string, error) {
 		return nil, err
 	}
 	words := strings.Fields(strings.ToLower(q.Query))
+	q = q.lowered(words)
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	selected := make([]*Exchange, 0)

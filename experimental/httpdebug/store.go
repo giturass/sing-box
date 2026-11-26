@@ -51,6 +51,12 @@ type Exchange struct {
 	pendingBytes int64
 	finishing    bool
 	bodies       *[2]bodyFile
+	// Metadata is written outside the index lock. saving orders the writes of
+	// one record; a brief record is written only once, when it finishes.
+	saving  *sync.Mutex
+	unsaved bool
+	brief   bool
+	search  string
 }
 
 // mu serializes writes in one direction. The descriptor and lifecycle flags are
@@ -221,9 +227,20 @@ func validID(id string) bool {
 }
 
 func (s *Store) begin(metadata Metadata, request *http.Request, bodyLimit int64) string {
+	record := s.add(metadata, request, bodyLimit, false)
+	if record == nil {
+		return ""
+	}
+	s.save(record)
+	return record.ID
+}
+
+// add lists a record without writing it; the caller saves it after releasing
+// its own locks.
+func (s *Store) add(metadata Metadata, request *http.Request, bodyLimit int64, brief bool) *Exchange {
 	random := make([]byte, 16)
 	if _, err := rand.Read(random); err != nil {
-		return ""
+		return nil
 	}
 	id := hex.EncodeToString(random)
 	headers, truncated := captureHeaders(request.Header, request.Host)
@@ -232,19 +249,22 @@ func (s *Store) begin(metadata Metadata, request *http.Request, bodyLimit int64)
 		Request: Message{Method: request.Method, URL: request.URL.String(), Protocol: request.Proto,
 			Headers: headers, HeadersTruncated: truncated, BodyComplete: request.Body == nil || request.Body == http.NoBody},
 		Response: Message{Headers: []Header{}},
+		saving:   new(sync.Mutex), brief: brief,
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.records[id] = record
 	s.order = append(s.order, id)
 	s.persistLocked(record)
-	return id
+	return record
 }
 
 func (s *Store) response(id string, response *http.Response) {
 	s.mu.Lock()
+	record := s.records[id]
+	defer s.save(record)
 	defer s.mu.Unlock()
-	if record := s.records[id]; record != nil && !record.finishing && !record.Complete {
+	if record != nil && !record.finishing && !record.Complete {
 		if response.TLS != nil && record.Metadata.TLS != nil {
 			metadata := *record.Metadata.TLS
 			metadata.UpstreamVersion = tlsVersion(response.TLS.Version)
@@ -286,8 +306,10 @@ func (s *Store) rewrittenRequest(id string, request *http.Request, originalURL s
 
 func (s *Store) markStreamResult(id string, injected, dropped bool) {
 	s.mu.Lock()
+	record := s.records[id]
+	defer s.save(record)
 	defer s.mu.Unlock()
-	if record := s.records[id]; record != nil && !record.finishing && !record.Complete {
+	if record != nil && !record.finishing && !record.Complete {
 		record.Metadata.Injected, record.Metadata.Dropped = injected, dropped
 		if dropped {
 			appendRecordNote(record, "Message dropped by stream script; saved payload was not forwarded")
@@ -298,8 +320,10 @@ func (s *Store) markStreamResult(id string, injected, dropped bool) {
 
 func (s *Store) webSocket(id string) {
 	s.mu.Lock()
+	record := s.records[id]
+	defer s.save(record)
 	defer s.mu.Unlock()
-	if record := s.records[id]; record != nil && !record.finishing && !record.Complete {
+	if record != nil && !record.finishing && !record.Complete {
 		record.Note = strings.ReplaceAll(record.Note, "Protocol upgraded; only the HTTP handshake is recorded",
 			"WebSocket handshake; data messages are recorded separately")
 		s.persistLocked(record)
@@ -422,6 +446,8 @@ func (s *Store) appendBody(id string, response bool, p []byte) {
 	s.mu.Unlock()
 
 	n, err := file.Write(p)
+	var finished *Exchange
+	defer func() { s.save(finished) }()
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	body.writing = false
@@ -441,6 +467,7 @@ func (s *Store) appendBody(id string, response bool, p []byte) {
 		if record.finishing {
 			record.Complete = record.pendingBytes == 0
 			s.persistLocked(record)
+			finished = record
 		}
 	}
 	if err != nil || body.done || record.Complete || s.records[id] != record {
@@ -513,8 +540,10 @@ func (s *Store) setError(id string, err error) {
 
 func (s *Store) finish(id string) {
 	s.mu.Lock()
+	record := s.records[id]
+	defer s.save(record)
 	defer s.mu.Unlock()
-	if record := s.records[id]; record != nil && !record.finishing && !record.Complete {
+	if record != nil && !record.finishing && !record.Complete {
 		s.finishLocked(record)
 	}
 }
@@ -529,10 +558,30 @@ func (s *Store) finishLocked(record *Exchange) {
 	s.persistLocked(record)
 }
 
+// persistLocked marks the metadata as changed. The caller writes it with save
+// once the index lock is released.
 func (s *Store) persistLocked(record *Exchange) {
+	record.unsaved = true
+}
+
+// save writes changed metadata without holding the index lock, so a slow disk
+// delays neither other records nor queries.
+func (s *Store) save(record *Exchange) {
+	if record == nil || record.saving == nil {
+		return
+	}
+	record.saving.Lock()
+	defer record.saving.Unlock()
+	s.mu.Lock()
+	if s.records[record.ID] != record || !record.unsaved || record.brief && !record.finishing {
+		s.mu.Unlock()
+		return
+	}
+	record.unsaved = false
 	data, err := json.Marshal(record)
+	s.mu.Unlock()
+	path := filepath.Join(s.directory, record.ID+".json")
 	if err == nil {
-		path := filepath.Join(s.directory, record.ID+".json")
 		err = os.WriteFile(path+".tmp", data, 0o600)
 		if err == nil {
 			err = os.Rename(path+".tmp", path)
@@ -540,6 +589,13 @@ func (s *Store) persistLocked(record *Exchange) {
 		if err != nil {
 			_ = os.Remove(path + ".tmp")
 		}
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.records[record.ID] != record {
+		// Removed while the write ran; its files were deleted before this one landed.
+		_ = os.Remove(path)
+		return
 	}
 	if err != nil {
 		s.lastError = "Cannot save capture metadata: " + err.Error()
