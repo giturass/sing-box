@@ -6,6 +6,8 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"time"
+	"unicode/utf8"
 )
 
 // UIProfileGet retains the caller's subscription User-Agent and URL
@@ -21,6 +23,16 @@ func (t *UIHTTPTask) ProfileGet(link, userAgent string) (*StringBox, error) {
 }
 
 func uiProfileGet(ctx context.Context, link, userAgent string) (*StringBox, error) {
+	return uiGetText(ctx, link, userAgent, 0)
+}
+
+func (t *UIHTTPTask) ModuleGet(link, userAgent string) (*StringBox, error) {
+	ctx, cancel := context.WithTimeout(t.ctx, time.Minute)
+	defer cancel()
+	return uiGetText(ctx, link, userAgent, 4<<20)
+}
+
+func uiGetText(ctx context.Context, link, userAgent string, limit int64) (*StringBox, error) {
 	root, err := url.Parse(link)
 	if err != nil || root == nil || root.Hostname() == "" || (root.Scheme != "http" && root.Scheme != "https") {
 		return nil, fmt.Errorf("invalid HTTP or HTTPS subscription address")
@@ -44,9 +56,16 @@ func uiProfileGet(ctx context.Context, link, userAgent string) (*StringBox, erro
 	if response.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("HTTP %s", response.Status)
 	}
-	content, err := io.ReadAll(response.Body)
+	var reader io.Reader = response.Body
+	if limit > 0 {
+		reader = io.LimitReader(reader, limit+1)
+	}
+	content, err := io.ReadAll(reader)
 	if err != nil {
 		return nil, err
+	}
+	if limit > 0 && (int64(len(content)) > limit || !utf8.Valid(content)) {
+		return nil, fmt.Errorf("module must be UTF-8 text no larger than %d bytes", limit)
 	}
 	return wrapString(string(content)), nil
 }

@@ -61,7 +61,10 @@ func (t *UIScriptTask) Run() (string, error) {
 }
 
 func NeedsUIMITMCA(configContent string) (bool, error) {
-	options, err := parseConfig(baseContext(nil), configContent)
+	ctx := baseContext(nil)
+	configContent, err := effectiveModuleConfig(ctx, configContent)
+	if err != nil { return false, err }
+	options, err := parseConfig(ctx, configContent)
 	if err != nil {
 		return false, err
 	}

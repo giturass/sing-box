@@ -9,6 +9,7 @@ type ExperimentalOptions struct {
 	HTTPRewrite *HTTPRewriteOptions `json:"http_rewrite,omitempty"`
 	MITM *MITMOptions `json:"mitm,omitempty"`
 	Scripts *ScriptsOptions `json:"scripts,omitempty"`
+	Modules []ModuleOptions `json:"modules,omitempty"`
 	CacheFile *CacheFileOptions `json:"cache_file,omitempty"`
 	ClashAPI  *ClashAPIOptions  `json:"clash_api,omitempty"`
 	V2RayAPI  *V2RayAPIOptions  `json:"v2ray_api,omitempty"`

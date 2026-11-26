@@ -55,6 +55,8 @@ func parseConfig(ctx context.Context, configContent string) (option.Options, err
 
 func CheckConfig(configContent string) error {
 	ctx := baseContext(nil)
+	configContent, err := effectiveModuleConfig(ctx, configContent)
+	if err != nil { return err }
 	options, err := parseConfig(ctx, configContent)
 	if err != nil {
 		return err
