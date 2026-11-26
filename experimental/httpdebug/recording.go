@@ -5,13 +5,24 @@ import "net/http"
 // Recording changes at HTTP request/TCP stream boundaries. Existing transports,
 // TLS handshakes, rewrites and cron jobs belong to the service, not a recording.
 func (e *Engine) beginRecording(metadata Metadata, request *http.Request) string {
+	return e.beginRecord(metadata, request, false)
+}
+
+// A brief record covers one stream message and is written when it finishes.
+func (e *Engine) beginRecord(metadata Metadata, request *http.Request, brief bool) string {
 	e.mu.Lock()
-	defer e.mu.Unlock()
 	config := e.recording.Load()
 	if e.closed || config == nil || !config.matches(metadata) {
+		e.mu.Unlock()
 		return ""
 	}
-	return e.store.begin(metadata, request, config.BodyLimit)
+	record := e.store.add(metadata, request, config.BodyLimit, brief)
+	e.mu.Unlock()
+	if record == nil {
+		return ""
+	}
+	e.store.save(record)
+	return record.ID
 }
 
 func (e *Engine) stopRecording() {
@@ -27,12 +38,17 @@ func (e *Engine) stopRecording() {
 
 func (s *Store) stopRecording() {
 	s.mu.Lock()
-	defer s.mu.Unlock()
+	stopped := make([]*Exchange, 0)
 	for _, record := range s.records {
 		if record.finishing || record.Complete {
 			continue
 		}
 		appendRecordNote(record, "Recording stopped; retained data may be incomplete; connection continues")
 		s.finishLocked(record)
+		stopped = append(stopped, record)
+	}
+	s.mu.Unlock()
+	for _, record := range stopped {
+		s.save(record)
 	}
 }

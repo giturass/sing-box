@@ -231,3 +231,32 @@ func TestStoreCompletionWaitsForPendingBodyAccounting(t *testing.T) {
 		t.Fatalf("finished writer remained open: %v", err)
 	}
 }
+
+func TestMetadataIsSavedOutsideTheIndexAndBriefRecordsOnce(t *testing.T) {
+	s, request := bodyTestStore(t)
+	brief := s.add(Metadata{}, request, 16, true)
+	s.save(brief)
+	s.response(brief.ID, &http.Response{StatusCode: 200, Header: make(http.Header)})
+	path := filepath.Join(s.directory, brief.ID+".json")
+	if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("a brief record was written before it finished: %v", err)
+	}
+	s.finish(brief.ID)
+	info, err := os.Stat(path)
+	if err != nil || info.Size() != s.records[brief.ID].jsonBytes || s.totalBytes != info.Size() {
+		t.Fatalf("finished record not saved or miscounted: %v", err)
+	}
+	if id := s.begin(Metadata{}, request, 16); s.records[id].unsaved {
+		t.Fatal("an ordinary record was not saved when it began")
+	}
+	// A record cleared before its write runs leaves no file behind.
+	cleared := s.add(Metadata{}, request, 16, false)
+	s.Clear()
+	s.save(cleared)
+	if _, err = os.Stat(filepath.Join(s.directory, cleared.ID+".json")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("a cleared record was written: %v", err)
+	}
+	if s.totalBytes != 0 || s.lastError != "" {
+		t.Fatalf("clear left %d bytes, error %q", s.totalBytes, s.lastError)
+	}
+}
