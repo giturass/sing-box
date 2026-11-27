@@ -80,8 +80,18 @@ func NewWARPOutbound(ctx context.Context, router adapter.Router, logger log.Cont
 		transport.Close()
 		return nil, err
 	}
-	return clientEndpoint, nil
+	return &warpOutbound{clientEndpoint}, nil
 }
+
+// warpOutbound keeps the WARP client in the lifecycle of the outbound manager
+// that created it. Upstream leaves every stage but Start of an adapter.Endpoint
+// to the endpoint manager, which only knows endpoints from its own registry.
+type warpOutbound struct {
+	*ClientEndpoint
+}
+
+// IsEndpoint hides the promoted endpoint marker.
+func (*warpOutbound) IsEndpoint() bool { return false }
 
 func validateWARPAddresses(addresses []netip.Prefix) error {
 	if len(addresses) == 0 {
