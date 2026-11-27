@@ -505,6 +505,10 @@ func DescribeProfileSurgeModule(content, id string) (string, error) {
 			}
 			parsed := readModule(source)
 			if source.ID == id {
+				delete(parsed.Lines, "mitm")
+				for _, host := range slices.Concat(parsed.hosts.insert, parsed.hosts.replace, parsed.hosts.append) {
+					parsed.Lines["mitm"] = append(parsed.Lines["mitm"], moduleLine{Text: host})
+				}
 				for index, line := range parsed.Lines["script"] {
 					parsed.Lines["script"][index].Index += offsets[line.Kind]
 				}

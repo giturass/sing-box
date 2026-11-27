@@ -2,6 +2,7 @@ package libbox
 
 import (
 	"encoding/json"
+	"slices"
 	"strings"
 	"testing"
 
@@ -43,25 +44,38 @@ helper = script-path=helper.js`
 
 func TestUIModuleHostScope(t *testing.T) {
 	for _, sample := range []struct {
-		lines, want string
-		ignored     int
-		invalid     bool
+		lines, want, shown string
+		ignored            int
+		invalid            bool
 	}{
-		{"hostname = %APPEND% static.test/path, good.test", "base.test,good.test", 1, false},
-		{"hostname = %APPEND% static.test/path", "base.test", 1, false},
-		{"hostname = %INSERT% first.test\nhostname = %APPEND% last.test", "first.test,base.test,last.test", 0, false},
-		{"hostname = %APPEND% discarded.test\nhostname = replaced.test\nhostname = %INSERT% first.test", "first.test,replaced.test", 0, false},
-		{"hostname =", "", 0, false},
-		{"hostname = %APPEND% *, -secret.test/path", "", 1, true},
-		{"hostname = broken.test/path", "", 1, true},
+		{"hostname = %APPEND% static.test/path, good.test", "base.test,good.test", "good.test", 1, false},
+		{"hostname = %APPEND% static.test/path", "base.test", "", 1, false},
+		{"hostname = %APPEND% last.test\nhostname = %INSERT% first.test", "first.test,base.test,last.test", "first.test last.test", 0, false},
+		{"hostname = %APPEND% discarded.test\nhostname = replaced.test\nhostname = %INSERT% first.test", "first.test,replaced.test", "first.test replaced.test", 0, false},
+		{"hostname = %APPEND% -private.test, , *.example.test, [2001:db8::1]:8443,", "base.test,-private.test,*.example.test,[2001:db8::1]:8443", "-private.test *.example.test [2001:db8::1]:8443", 0, false},
+		{"hostname =", "", "", 0, false},
+		{"hostname = %APPEND% *, -secret.test/path", "", "", 1, true},
+		{"hostname = broken.test/path", "", "", 1, true},
 	} {
 		module := option.ModuleOptions{ID: "scope", Enabled: true, Content: "[MITM]\n" + sample.lines}
-		if got := len(readModule(module).Lines["ignored"]); got != sample.ignored {
-			t.Fatalf("%s: ignored %d", sample.lines, got)
-		}
 		data, err := json.Marshal(moduleObject{"experimental": moduleObject{"mitm": moduleObject{"hosts": []string{"base.test"}}, "modules": []option.ModuleOptions{module}}})
 		if err != nil {
 			t.Fatal(err)
+		}
+		details, err := DescribeProfileSurgeModule(string(data), module.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var parsed moduleDescription
+		if err := json.Unmarshal([]byte(details), &parsed); err != nil {
+			t.Fatal(err)
+		}
+		var shown []string
+		for _, line := range parsed.Lines["mitm"] {
+			shown = append(shown, line.Text)
+		}
+		if !slices.Equal(shown, strings.Fields(sample.shown)) || len(parsed.Lines["ignored"]) != sample.ignored {
+			t.Fatalf("%s: unexpected details: %s", sample.lines, details)
 		}
 		result, err := effectiveModuleConfig(baseContext(nil), string(data))
 		if sample.invalid {
