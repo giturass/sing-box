@@ -120,10 +120,13 @@ func (t *WARPTransport) openHTTP3(ctx, lifetime context.Context) (transportHTTP.
 	case <-ctx.Done():
 		return nil, ctx.Err()
 	}
-	// Cloudflare may omit SETTINGS_ENABLE_CONNECT_PROTOCOL for cf-connect-ip.
-	if !client.Settings().EnableDatagrams {
+	settings := client.Settings()
+	if !settings.EnableDatagrams {
 		return nil, E.New("WARP endpoint did not enable HTTP/3 datagrams")
 	}
+	// Cloudflare may omit SETTINGS_ENABLE_CONNECT_PROTOCOL for cf-connect-ip, and
+	// quic-go only sends an extended CONNECT once the peer's settings enable it.
+	settings.EnableExtendedConnect = true
 	request, err := client.OpenRequestStream(ctx)
 	if err != nil {
 		return nil, err
