@@ -8,6 +8,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/sagernet/sing-box/adapter"
 	C "github.com/sagernet/sing-box/constant"
 	transportHTTP "github.com/sagernet/sing-box/transport/http"
 	"github.com/sagernet/sing-tun"
@@ -270,7 +271,11 @@ func (c *Client) Suspend() {
 	}
 	c.notifyStateLocked()
 	c.access.Unlock()
-	c.httpClient.SetKeepIdleConnections(false)
+	if keeper, ok := c.httpClient.(adapter.IdleConnectionKeeper); ok {
+		keeper.SetKeepIdleConnections(false)
+	} else {
+		c.httpClient.ResetConnections()
+	}
 }
 
 func (c *Client) Resume() {
@@ -281,7 +286,9 @@ func (c *Client) Resume() {
 	}
 	c.suspended = false
 	c.lastError = nil
-	c.httpClient.SetKeepIdleConnections(true)
+	if keeper, ok := c.httpClient.(adapter.IdleConnectionKeeper); ok {
+		keeper.SetKeepIdleConnections(true)
+	}
 	c.notifyStateLocked()
 }
 

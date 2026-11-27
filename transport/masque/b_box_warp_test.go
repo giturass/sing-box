@@ -378,6 +378,36 @@ func (t *warpGatedTestTransport) OpenTunnel(ctx context.Context, _, _ string) (i
 func (t *warpGatedTestTransport) ResetConnections() {}
 func (t *warpGatedTestTransport) Close() error      { return nil }
 
+type warpIdleTestTransport struct {
+	warpGatedTestTransport
+	keep   []bool
+	resets int
+}
+
+func (transport *warpIdleTestTransport) SetKeepIdleConnections(keep bool) {
+	transport.keep = append(transport.keep, keep)
+}
+
+func (transport *warpIdleTestTransport) CloseIdleConnections() {}
+
+func (transport *warpIdleTestTransport) ResetConnections() { transport.resets++ }
+
+func TestWARPSuspendResumeUsesIdlePolicy(t *testing.T) {
+	transport := new(warpIdleTestTransport)
+	client, err := NewClient(ClientOptions{Context: context.Background(), Path: "/", HTTPClient: transport})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { client.Close() })
+	client.Suspend()
+	client.Suspend()
+	client.Resume()
+	client.Resume()
+	if !reflect.DeepEqual(transport.keep, []bool{false, true}) || transport.resets != 0 {
+		t.Fatalf("idle policy = %v, resets = %d", transport.keep, transport.resets)
+	}
+}
+
 func TestWARPNetworkResetRevokesReadiness(t *testing.T) {
 	transport := &warpGatedTestTransport{permits: make(chan struct{}, 1)}
 	handler := &warpTestHandler{configuration: make(chan Configuration, 8), packets: make(chan []byte, 8)}

@@ -16,11 +16,11 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
 COPIES = (
-    ("sing-tun", "github.com/sagernet/sing-tun", "v0.9.7-0.20261023115453-611d83b7a57b",
-     "h1:GJhvtWFcBCBvvTqg1u9mL3f2yFo1kwPHglgdEjVtPEo=", "sing-tun-android-ingress.patch",
+    ("sing-tun", "github.com/sagernet/sing-tun", "v0.9.7-0.20261126024559-1a13df1ac21f",
+     "h1:f/7mUXgGb9t+VECBE8fSWxQyE54/FsdA6Wf++kMGoPY=", "sing-tun-android-ingress.patch",
      ("redirect_ingress_discard_value_linux_test.go",)),
-    ("sing-vmess", "github.com/sagernet/sing-vmess", "v0.2.9-0.20261019223527-a0c58542bd9d",
-     "h1:K93710Sq6/TFl3GVs+NclQ3I+KPXFLluSsUFC0Sm0N8=", "sing-vmess-vision-pointer.patch",
+    ("sing-vmess", "github.com/sagernet/sing-vmess", "v0.2.9-0.20261124075649-4acc92a6f6c6",
+     "h1:vyyQcx1p4dVam3oHPbxIUp/bzP1vKmHaidQ42iuRMa4=", "sing-vmess-vision-pointer.patch",
      ("vless/vision_pointer_test.go", "vless/vision_pointer_utls_test.go")),
     ("regexp2", "github.com/dlclark/regexp2/v2", "v2.11.0",
      "h1:z5uRPHav+eTVpoffDSuUP2KPS4f1ONZaPDK73S8HA0w=", "regexp2-cancel.patch",
@@ -43,6 +43,7 @@ def module_hash(directory, prefix):
 
 def main():
     go_mod = (ROOT.parent / "go.mod").read_text()
+    requirements = [line.split("//", 1)[0].split() for line in go_mod.splitlines()]
     failures = []
     for name, module, version, expected, patch, added in COPIES:
         with tempfile.TemporaryDirectory() as scratch:
@@ -65,6 +66,8 @@ def main():
             actual = module_hash(copy, f"{module}@{version}")
         if actual != expected:
             failures.append(f"{name}: {module}@{version} is {actual}, expected {expected}")
+        if [module, version] not in requirements:
+            failures.append(f"{name}: go.mod does not require {module} {version}")
         if f"{module} => ./.b-box/{name}" not in go_mod:
             failures.append(f"{name}: go.mod does not replace {module} with ./.b-box/{name}")
         print(f"{name}: {module}@{version} {actual}")

@@ -18,6 +18,7 @@ import (
 	"github.com/sagernet/sing-box/adapter"
 	"github.com/sagernet/sing-box/common/dialer"
 	"github.com/sagernet/sing-box/common/httpclient"
+	boxTLS "github.com/sagernet/sing-box/common/tls"
 	"github.com/sagernet/sing-box/log"
 	transportHTTP "github.com/sagernet/sing-box/transport/http"
 	E "github.com/sagernet/sing/common/exceptions"
@@ -58,6 +59,10 @@ func (t *WARPTransport) listenPacket(ctx context.Context) (net.PacketConn, M.Soc
 
 func (t *WARPTransport) openHTTP3(ctx, lifetime context.Context) (transportHTTP.DatagramStream, error) {
 	config, err := t.tlsConfig(3)
+	if err != nil {
+		return nil, err
+	}
+	config, err = boxTLS.QUICDialConfig(ctx, config)
 	if err != nil {
 		return nil, err
 	}

@@ -3,6 +3,7 @@
 package v2rayxhttp
 
 import (
+	"bytes"
 	"context"
 	"net"
 	"testing"
@@ -15,6 +16,35 @@ import (
 	M "github.com/sagernet/sing/common/metadata"
 	N "github.com/sagernet/sing/common/network"
 )
+
+func TestQUICDialSnapshotsSharedECHCache(t *testing.T) {
+	base, err := boxtls.NewClient(t.Context(), logger.NOP(), "example.org", option.OutboundTLSOptions{
+		Enabled: true,
+		ECH:     &option.OutboundECHOptions{Enabled: true},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	converted, err := boxtls.QUICClientConfig(base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ech := base.(boxtls.ECHCapableConfig)
+	snapshot := func() boxtls.ECHCapableConfig {
+		t.Helper()
+		config, err := boxtls.QUICDialConfig(t.Context(), converted)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return config.(boxtls.ECHCapableConfig)
+	}
+	ech.SetECHConfigList([]byte{1})
+	first := snapshot()
+	ech.SetECHConfigList([]byte{2})
+	if !bytes.Equal(first.ECHConfigList(), []byte{1}) || !bytes.Equal(snapshot().ECHConfigList(), []byte{2}) {
+		t.Fatal("QUIC dials must snapshot the current ECH cache without modifying previous dials")
+	}
+}
 
 func TestE2E_HTTP3(t *testing.T) {
 	tlsConfig := newTestTLSServer(t, "h3")

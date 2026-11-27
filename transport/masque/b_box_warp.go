@@ -172,9 +172,16 @@ func (t *WARPTransport) tlsConfig(version int) (boxTLS.Config, error) {
 		return nil, err
 	}
 	if version == 3 {
-		return boxTLS.NewSTDClient(t.ctx, t.logger, t.options.Server, options)
+		options.Engine = C.TLSEngineGo
+		options.UTLS = nil
 	}
-	return boxTLS.NewClient(t.ctx, t.logger, t.options.Server, options)
+	return boxTLS.NewClientWithOptions(boxTLS.ClientOptions{
+		Context:        t.ctx,
+		Logger:         t.logger,
+		ServerAddress:  t.options.Server,
+		Options:        options,
+		DomainResolver: t.options.DomainResolver,
+	})
 }
 
 func (t *WARPTransport) OpenTunnel(ctx context.Context, _, _ string) (io.ReadWriteCloser, error) {

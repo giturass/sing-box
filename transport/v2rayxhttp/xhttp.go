@@ -109,10 +109,11 @@ func newDownloadEndpoint(
 	var tlsConfig boxtls.Config
 	if options.TLS != nil && options.TLS.Enabled {
 		tlsConfig, err = boxtls.NewClientWithOptions(boxtls.ClientOptions{
-			Context:       ctx,
-			Logger:        logger.NOP(),
-			ServerAddress: serverName,
-			Options:       *options.TLS,
+			Context:        ctx,
+			Logger:         logger.NOP(),
+			ServerAddress:  serverName,
+			Options:        *options.TLS,
+			DomainResolver: options.DomainResolver,
 		})
 		if err != nil {
 			return nil, err

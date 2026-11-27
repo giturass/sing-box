@@ -56,6 +56,7 @@ func NewWARPOutbound(ctx context.Context, router adapter.Router, logger log.Cont
 			Adapter: endpoint.NewAdapterWithDialerOptions(C.TypeMASQUE, tag, []string{N.NetworkTCP, N.NetworkUDP, N.NetworkICMP}, options.DialerOptions),
 			router:  router,
 			logger:  logger,
+			network: service.FromContext[adapter.NetworkManager](ctx),
 		},
 		ctx:       ctx,
 		dnsRouter: service.FromContext[adapter.DNSRouter](ctx),
