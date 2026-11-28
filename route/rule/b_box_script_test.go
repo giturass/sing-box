@@ -36,13 +36,17 @@ func (d *scriptRuleDNS) Lookup(ctx context.Context, domain string, _ adapter.DNS
 func startRuleScriptTest(t *testing.T, source string) (context.Context, *scriptRuleDNS) {
 	t.Helper()
 	httpdebug.StopService()
-	t.Cleanup(httpdebug.StopService)
-	prepared, err := httpdebug.PrepareProcessing(t.TempDir(), nil, nil,
-		&httpdebug.ScriptsConfig{Enabled: true, Rule: []httpdebug.GenericScript{{Name: "choose", Source: source}}}, "", nil, "UTC")
+	// Only the process capture directory is shared. Every fixture invocation
+	// gets its own persistent-store namespace and profile resource directory.
+	namespace := "rule-test-" + strconv.FormatUint(ruleScriptTestNamespace.Add(1), 10)
+	prepared, err := httpdebug.PrepareProcessing(ruleScriptTestDirectory, nil, nil,
+		&httpdebug.ScriptsConfig{Enabled: true, Rule: []httpdebug.GenericScript{{Name: "choose", Source: source, StorageNamespace: namespace}}}, "", nil, "UTC")
 	if err != nil {
 		t.Fatal(err)
 	}
+	prepared.SetProfileDirectory(t.TempDir())
 	httpdebug.ActivateProcessing(prepared, nil, nil, "")
+	t.Cleanup(httpdebug.StopService)
 	dns := &scriptRuleDNS{}
 	ctx := service.ContextWithDefaultRegistry(context.Background())
 	ctx = service.ContextWith[adapter.DNSRouter](ctx, dns)

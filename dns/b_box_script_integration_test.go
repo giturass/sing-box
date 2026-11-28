@@ -116,13 +116,17 @@ func bBoxIntegrationDNSRouter(t *testing.T, outbound adapter.Outbound) (*boxDNS.
 
 func bBoxActivateDNSScript(t *testing.T, directory, source string) {
 	t.Helper()
-	prepared, err := httpdebug.PrepareProcessing(directory, nil, nil, &httpdebug.ScriptsConfig{
+	httpdebug.StopService()
+	t.Cleanup(httpdebug.StopService)
+	namespace := "dns-test-" + strconv.FormatUint(bBoxDNSScriptTestNamespace.Add(1), 10)
+	prepared, err := httpdebug.PrepareProcessing(bBoxDNSScriptTestDirectory, nil, nil, &httpdebug.ScriptsConfig{
 		Enabled: true,
-		DNS:     []httpdebug.GenericScript{{Name: "resolver", Source: source}},
+		DNS:     []httpdebug.GenericScript{{Name: "resolver", Source: source, StorageNamespace: namespace}},
 	}, "", nil, "UTC", httpdebug.ProcessingConfig{
 		DNSHosts: []httpdebug.DNSHost{{Pattern: "script.example.test", Script: "resolver"}},
 	})
 	require.NoError(t, err)
+	prepared.SetProfileDirectory(directory)
 	httpdebug.ActivateProcessing(prepared, nil, nil)
 }
 
