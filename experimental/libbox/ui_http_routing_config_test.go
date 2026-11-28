@@ -47,7 +47,7 @@ func uiHTTPRoutingConfigFixture(remote string) string {
     "http_routing":{"enabled":true,"force_http_engine_hosts":["-internal.test:8080","api?.test:8080","*.test:0","<simple-hostname>:8080","<ip-address>:8080"]},
     "mitm":{"enabled":true,"hosts":["api.test"],"h2":true},
     "scripts":{"enabled":true,
-      "rule":[{"name":"choose","source":"throw new Error('validation executed rule script');"},{"name":"remote-condition","script_path":%q,"script_update_interval":-1}],
+      "rule":[{"name":"choose","source":"throw new Error('validation executed rule script');"},{"name":"remote-condition","script_path":%q,"script_update_interval":3600}],
       "dns":[{"name":"answer","source":"throw new Error('validation executed DNS script');"},{"name":"remote-answer","script_path":%q}]
     },
     "dns_hosts":[{"pattern":"static.test","addresses":["192.0.2.20","2001:db8::20"]},{"pattern":"*.test","script":"answer"}]
@@ -85,7 +85,7 @@ func TestUIHTTPRoutingCompleteConfigValidationAndFormatDoNotDownloadResources(t 
 	require.Len(t, actual.Route.RuleSet[0].InlineOptions.Rules, 6)
 	require.Equal(t, C.RuleSetFormatSurgeRules, actual.Route.RuleSet[1].Format)
 	require.Equal(t, C.RuleSetFormatSurgeDomains, actual.Route.RuleSet[2].Format)
-	for _, field := range []string{`"format": "surge-rule-set"`, `"format": "surge-domain-set"`, `"http_response": "reject-dict"`, `"script_update_interval": -1`} {
+	for _, field := range []string{`"format": "surge-rule-set"`, `"format": "surge-domain-set"`, `"http_response": "reject-dict"`, `"script_update_interval": 3600`} {
 		require.Contains(t, formatted.Value, field)
 	}
 	require.Zero(t, downloads.Load(), "complete config validation or formatting performed a remote fetch")
