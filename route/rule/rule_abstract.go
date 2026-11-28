@@ -21,6 +21,8 @@ type abstractDefaultRule struct {
 	ruleSetItem             *RuleSetItem
 	invert                  bool
 	action                  adapter.RuleAction
+	httpExtendedMatching    bool
+	surgeNoResolve          bool
 }
 
 func (r *abstractDefaultRule) Type() string {
@@ -52,10 +54,14 @@ func (r *abstractDefaultRule) Close() error {
 }
 
 func (r *abstractDefaultRule) Match(metadata *adapter.InboundContext) bool {
+	defer r.applySurgeScope(metadata)()
 	if len(r.allItems) == 0 {
 		return true
 	}
 	matched := r.matchInner(metadata)
+	if metadata.RuleMatchPendingHTTP || metadata.RuleMatchError != nil {
+		return false
+	}
 	if r.invert {
 		if !matched {
 			metadata.DeferredIPCIDRMatchGroups = 0
@@ -80,6 +86,7 @@ func (r *abstractDefaultRule) matchInner(metadata *adapter.InboundContext) bool 
 }
 
 func (r *abstractDefaultRule) evaluateForMerge(metadata *adapter.InboundContext) (ruleGroupMatch, bool) {
+	defer r.applySurgeScope(metadata)()
 	groups := r.evaluateGroups(metadata)
 	for _, item := range r.items {
 		if !item.Match(metadata) {
@@ -87,6 +94,13 @@ func (r *abstractDefaultRule) evaluateForMerge(metadata *adapter.InboundContext)
 		}
 	}
 	return groups, true
+}
+
+func (r *abstractDefaultRule) applySurgeScope(metadata *adapter.InboundContext) func() {
+	extended, noResolve := metadata.HTTPExtendedMatching, metadata.SurgeNoResolve
+	metadata.HTTPExtendedMatching = extended || r.httpExtendedMatching
+	metadata.SurgeNoResolve = noResolve || r.surgeNoResolve
+	return func() { metadata.HTTPExtendedMatching, metadata.SurgeNoResolve = extended, noResolve }
 }
 
 func (r *abstractDefaultRule) destinationIPCIDRMatchesSource(metadata *adapter.InboundContext) bool {
@@ -117,6 +131,7 @@ func (r *abstractDefaultRule) evaluateGroups(metadata *adapter.InboundContext) r
 			groups.satisfied |= ruleMatchSourcePort
 		}
 	}
+	destinationPendingHTTP := metadata.RuleMatchPendingHTTP
 	if len(r.destinationAddressItems) > 0 {
 		groups.required |= ruleMatchDestinationAddress
 		if matchAnyItem(r.destinationAddressItems, metadata) {
@@ -127,6 +142,7 @@ func (r *abstractDefaultRule) evaluateGroups(metadata *adapter.InboundContext) r
 		groups.required |= ruleMatchDestinationAddress
 		if !groups.satisfied.has(ruleMatchDestinationAddress) && matchAnyItem(r.destinationIPCIDRItems, metadata) {
 			groups.satisfied |= ruleMatchDestinationAddress
+			metadata.RuleMatchPendingHTTP = destinationPendingHTTP
 		}
 	}
 	if len(r.destinationPortItems) > 0 {
@@ -199,14 +215,24 @@ func (r *abstractLogicalRule) Match(metadata *adapter.InboundContext) bool {
 	var (
 		matched        bool
 		deferredGroups uint8
+		pendingHTTP    bool
 	)
 	snapshot := snapshotRuleMatch(metadata)
 	if r.mode == C.LogicalTypeAnd {
 		matched = true
 		for _, rule := range r.rules {
 			metadata.ResetRuleCache()
-			if !rule.Match(metadata) {
+			childMatched := rule.Match(metadata)
+			if metadata.RuleMatchError != nil {
+				break
+			}
+			if metadata.RuleMatchPendingHTTP {
+				pendingHTTP = true
+				continue
+			}
+			if !childMatched {
 				matched = false
+				pendingHTTP = false
 				deferredGroups = 0
 				break
 			}
@@ -215,8 +241,17 @@ func (r *abstractLogicalRule) Match(metadata *adapter.InboundContext) bool {
 	} else {
 		for _, rule := range r.rules {
 			metadata.ResetRuleCache()
-			if rule.Match(metadata) {
+			childMatched := rule.Match(metadata)
+			if metadata.RuleMatchError != nil {
+				break
+			}
+			if metadata.RuleMatchPendingHTTP {
+				pendingHTTP = true
+				continue
+			}
+			if childMatched {
 				matched = true
+				pendingHTTP = false
 				if metadata.DeferredIPCIDRMatchGroups == 0 {
 					deferredGroups = 0
 					break
@@ -226,6 +261,10 @@ func (r *abstractLogicalRule) Match(metadata *adapter.InboundContext) bool {
 		}
 	}
 	snapshot.restore(metadata)
+	metadata.RuleMatchPendingHTTP = pendingHTTP
+	if pendingHTTP || metadata.RuleMatchError != nil {
+		return false
+	}
 	if matched {
 		metadata.DeferredIPCIDRMatchGroups |= deferredGroups
 	}
@@ -258,9 +297,21 @@ func (r *abstractLogicalRule) String() string {
 }
 
 func matchAnyItem(items []RuleItem, metadata *adapter.InboundContext) bool {
-	return common.Any(items, func(it RuleItem) bool {
-		return it.Match(metadata)
-	})
+	previousPending := metadata.RuleMatchPendingHTTP
+	pending := false
+	for _, item := range items {
+		metadata.RuleMatchPendingHTTP = false
+		if item.Match(metadata) {
+			metadata.RuleMatchPendingHTTP = previousPending
+			return true
+		}
+		pending = pending || metadata.RuleMatchPendingHTTP
+		if metadata.RuleMatchError != nil {
+			break
+		}
+	}
+	metadata.RuleMatchPendingHTTP = previousPending || pending
+	return false
 }
 
 func (s ruleMatchState) has(target ruleMatchState) bool {

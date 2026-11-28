@@ -45,7 +45,7 @@ func http3TestOrigin(t *testing.T, certificate tls.Certificate, handler http.Han
 	return raw.LocalAddr().String()
 }
 
-func http3TestClient(t *testing.T, e *Engine, origin string, ca, roots *x509.CertPool, version quic.Version, clientTLS *tls.Config) (*http.Client, *atomic.Int32) {
+func http3TestClient(t *testing.T, e *Engine, origin string, ca, roots *x509.CertPool, version quic.Version, clientTLS *tls.Config, routes ...RequestRouteFunc) (*http.Client, *atomic.Int32) {
 	t.Helper()
 	dials := &atomic.Int32{}
 	if clientTLS == nil {
@@ -78,7 +78,7 @@ func http3TestClient(t *testing.T, e *Engine, origin string, ca, roots *x509.Cer
 					return nil, nil, err
 				}
 				return raw, peer, nil
-			}, nil, roots, nil) {
+			}, nil, roots, nil, routes...) {
 			_ = inbound.Close()
 			return nil, errors.New("QUIC was not selected")
 		}

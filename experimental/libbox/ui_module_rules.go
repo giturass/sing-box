@@ -1,157 +1,244 @@
 package libbox
 
 import (
+	"crypto/sha256"
+	"encoding/base64"
+	"encoding/hex"
+	"encoding/json"
 	"fmt"
-	"net/netip"
-	"regexp"
-	"strconv"
 	"strings"
+
+	C "github.com/sagernet/sing-box/constant"
+	"github.com/sagernet/sing-box/experimental/httpdebug"
+	"github.com/sagernet/sing-box/option"
 )
 
 type moduleObject = map[string]any
 
 func moduleFields(text string, nested bool) ([]string, bool) {
-	var fields []string
-	start, depth := 0, 0
-	quoted := false
-	for index, char := range text {
-		switch {
-		case char == '"' && (index == 0 || text[index-1] != '\\'):
-			quoted = !quoted
-		case !quoted && nested && char == '(':
-			depth++
-		case !quoted && nested && char == ')':
-			depth--
-			if depth < 0 {
-				return nil, false
-			}
-		case !quoted && depth == 0 && char == ',':
-			fields = append(fields, strings.TrimSpace(text[start:index]))
-			start = index + 1
+	return option.SurgeRuleFields(text, nested)
+}
+func moduleUnquote(value string) string { return option.SurgeUnquote(value) }
+
+func moduleRule(line string) (moduleObject, string, bool) {
+	parsed, err := option.ParseSurgeRule(line, true)
+	return parsed.Rule, parsed.Policy, err == nil
+}
+
+func moduleRulePolicy(rule moduleObject, policy string) {
+	switch strings.ToUpper(policy) {
+	case "REJECT":
+		rule["action"] = "reject"
+	case "REJECT-DROP":
+		rule["action"], rule["method"] = "reject", "drop"
+	case "REJECT-NO-DROP":
+		rule["action"], rule["no_drop"] = "reject", true
+	case "REJECT-200", "REJECT-DICT", "REJECT-TINYGIF":
+		rule["action"], rule["http_response"] = "reject", strings.ToLower(policy)
+	default:
+		rule["outbound"] = policy
+	}
+}
+
+func (description *moduleDescription) addForceHTTPHosts(line, value string) {
+	mode := "replace"
+	for _, token := range []string{"%APPEND%", "%INSERT%"} {
+		if strings.HasPrefix(value, token) {
+			mode, value = token, strings.TrimSpace(value[len(token):])
+			break
 		}
 	}
-	return append(fields, strings.TrimSpace(text[start:])), depth == 0 && !quoted
-}
-
-func moduleUnquote(value string) string {
-	if len(value) >= 2 && value[0] == '"' && value[len(value)-1] == '"' {
-		return value[1 : len(value)-1]
+	hosts := []string{}
+	for _, raw := range strings.Split(value, ",") {
+		raw = strings.TrimSpace(raw)
+		if raw == "" {
+			continue
+		}
+		// Normalization preserves a bare host without adding port 443. The
+		// forced plaintext engine interprets the shared Host List grammar at 80.
+		host, err := httpdebug.NormalizeMITMHost(raw)
+		if err != nil {
+			issue := fmt.Errorf("invalid forced HTTP host %q: %w", raw, err)
+			description.Lines["ignored"] = append(description.Lines["ignored"], moduleLine{Text: line, Issue: issue.Error()})
+			if mode == "replace" || strings.HasPrefix(raw, "-") {
+				description.forceHTTPHosts.invalid = issue
+				return
+			}
+			continue
+		}
+		hosts = append(hosts, host)
 	}
-	return value
+	if mode != "replace" && len(hosts) == 0 {
+		return
+	}
+	patch := &description.forceHTTPHosts
+	switch {
+	case mode == "replace":
+		patch.insert, patch.append, patch.replace = nil, nil, hosts
+	case mode == "%INSERT%" && patch.replace != nil:
+		patch.replace = append(hosts, patch.replace...)
+	case mode == "%APPEND%" && patch.replace != nil:
+		patch.replace = append(patch.replace, hosts...)
+	case mode == "%INSERT%":
+		patch.insert = append(hosts, patch.insert...)
+	default:
+		patch.append = append(patch.append, hosts...)
+	}
+	description.Lines["general"] = append(description.Lines["general"], moduleLine{Text: line})
 }
 
-func moduleMatch(kind, value string, depth int) moduleObject {
-	if value == "" || depth > 32 {
+// Resource names are resolved with the original profile's native tags in hand.
+// Surge inline names take precedence; a pre-existing native tag is an explicit
+// B-box compatibility entry, while URLs / module attachments use Surge text.
+func (description *moduleDescription) resolveModuleRuleSets(source option.ModuleOptions, native, used map[string]bool, resourceFormats map[string]string, resourceIntervals map[string]int64) error {
+	definitions := map[string]moduleObject{}
+	var order []string
+	var resolve func(moduleObject) error
+	resolve = func(rule moduleObject) error {
+		if children, ok := rule["rules"].([]moduleObject); ok {
+			for _, child := range children {
+				if err := resolve(child); err != nil {
+					return err
+				}
+			}
+			return nil
+		}
+		format, hasReference := rule["_surge_set_format"].(string)
+		if !hasReference {
+			return nil
+		}
+		name, _ := rule["rule_set"].(string)
+		interval, hasInterval := rule["_surge_set_update_interval"].(int64)
+		delete(rule, "_surge_set_format")
+		delete(rule, "_surge_set_update_interval")
+		if name == "" {
+			return fmt.Errorf("empty module rule-set reference")
+		}
+		var definition moduleObject
+		var identity string
+		if inline, found := description.inlineRuleSets[name]; found && format == C.RuleSetFormatSurgeRules {
+			if issue := description.inlineRuleSetIssues[name]; issue != nil {
+				return fmt.Errorf("inline rule-set %q: %w", name, issue)
+			}
+			if len(inline) == 0 {
+				return fmt.Errorf("inline rule-set %q has no supported rules", name)
+			}
+			data, err := json.Marshal(inline)
+			if err != nil {
+				return err
+			}
+			var rules []option.HeadlessRule
+			if err := json.Unmarshal(data, &rules); err != nil {
+				return fmt.Errorf("inline rule-set %q: %w", name, err)
+			}
+			option.ApplySurgeDomainSetExtendedMatching(rules)
+			inline, err = moduleHeadlessRuleMaps(rules)
+			if err != nil {
+				return err
+			}
+			identity = "inline:" + source.ID + ":" + name
+			definition = moduleObject{"type": "inline", "rules": inline}
+			if hasInterval {
+				return fmt.Errorf("update-interval cannot apply to an inline rule-set")
+			}
+		} else if native[name] && format == C.RuleSetFormatSurgeRules && !strings.Contains(name, "://") {
+			if hasInterval {
+				return fmt.Errorf("update-interval cannot apply to an existing sing-box rule-set tag")
+			}
+			return nil
+		} else {
+			remote, encoded, err := moduleResource(source, name)
+			if err != nil {
+				return err
+			}
+			if remote != "" {
+				identity = remote
+				definition = moduleObject{"type": "remote", "format": format, "url": remote}
+				if format == C.RuleSetFormatSurgeRules {
+					definition["script_namespace"] = source.ID + "/"
+				}
+				if hasInterval {
+					definition["update_interval"] = fmt.Sprintf("%ds", interval)
+				}
+			} else {
+				identity = "attachment:" + source.ID + ":" + name
+				data, err := base64.StdEncoding.DecodeString(encoded)
+				if err != nil {
+					return fmt.Errorf("invalid rule-set attachment %q: %w", name, err)
+				}
+				set, warnings, err := option.ParseSurgeRuleSet(data, format)
+				if err != nil {
+					return err
+				}
+				for _, warning := range warnings {
+					description.Lines["ignored"] = append(description.Lines["ignored"], moduleLine{Text: name + ":" + fmt.Sprint(warning.Line) + ": " + warning.Text, Issue: warning.Issue})
+				}
+				if len(set.Rules) == 0 {
+					return fmt.Errorf("rule-set attachment %q has no supported rules", name)
+				}
+				maps, err := moduleHeadlessRuleMaps(set.Rules)
+				if err != nil {
+					return err
+				}
+				definition = moduleObject{"type": "inline", "rules": maps}
+				if hasInterval {
+					return fmt.Errorf("update-interval cannot apply to a module attachment")
+				}
+			}
+			if previous := resourceFormats[identity]; previous != "" && previous != format {
+				return fmt.Errorf("one Surge rule-set resource cannot use both RULE-SET and DOMAIN-SET: %s", name)
+			}
+			resourceFormats[identity] = format
+			if remote != "" {
+				effectiveInterval := int64(86400)
+				if hasInterval {
+					effectiveInterval = interval
+				}
+				if effectiveInterval < 0 {
+					effectiveInterval = -1
+				}
+				if previous, found := resourceIntervals[identity]; found && previous != effectiveInterval {
+					return fmt.Errorf("conflicting update intervals for one Surge rule-set resource: %s", name)
+				}
+				resourceIntervals[identity] = effectiveInterval
+			}
+		}
+		key := format + "\x00" + identity
+		if existing := definitions[key]; existing != nil {
+			definition = existing
+		} else {
+			sum := sha256.Sum256([]byte(source.ID + "\x00" + key))
+			base := "module-rule-set-" + hex.EncodeToString(sum[:8])
+			tag := base
+			for number := 2; used[tag]; number++ {
+				tag = fmt.Sprintf("%s-%d", base, number)
+			}
+			used[tag] = true
+			definition["tag"] = tag
+			definitions[key] = definition
+			order = append(order, key)
+		}
+		rule["rule_set"] = definition["tag"]
 		return nil
 	}
-	switch kind {
-	case "AND", "OR", "NOT":
-		if !strings.HasPrefix(value, "(") || !strings.HasSuffix(value, ")") {
-			return nil
+	for _, raw := range description.values["rules"] {
+		if err := resolve(raw.(moduleObject)); err != nil {
+			return err
 		}
-		parts, ok := moduleFields(value[1:len(value)-1], true)
-		if !ok || kind == "NOT" && len(parts) != 1 {
-			return nil
-		}
-		var rules []moduleObject
-		for _, part := range parts {
-			if len(part) < 2 || part[0] != '(' || part[len(part)-1] != ')' {
-				return nil
-			}
-			fields, ok := moduleFields(part[1:len(part)-1], true)
-			if !ok || len(fields) != 2 {
-				return nil
-			}
-			child := moduleMatch(strings.ToUpper(fields[0]), moduleUnquote(fields[1]), depth+1)
-			if child == nil {
-				return nil
-			}
-			rules = append(rules, child)
-		}
-		if kind == "NOT" {
-			return moduleObject{"type": "logical", "mode": "and", "rules": rules, "invert": true}
-		}
-		return moduleObject{"type": "logical", "mode": strings.ToLower(kind), "rules": rules}
-	case "DOMAIN", "DOMAIN-KEYWORD", "DOMAIN-SUFFIX", "PROCESS-NAME", "PROCESS-PATH", "PACKAGE-NAME", "SSID", "DOMAIN-WILDCARD":
-		key := strings.ReplaceAll(strings.ToLower(kind), "-", "_")
-		if kind == "SSID" {
-			key = "wifi_ssid"
-		}
-		if kind == "DOMAIN-WILDCARD" {
-			key = "domain_regex"
-			value = "(?i)^" + strings.NewReplacer(`\*`, `.*`, `\?`, `.`).Replace(regexp.QuoteMeta(value)) + "$"
-		}
-		return moduleObject{key: value}
-	case "IP-CIDR", "IP-CIDR6", "SRC-IP", "SRC-IP-CIDR":
-		prefix, err := netip.ParsePrefix(value)
-		if err != nil {
-			addr, err := netip.ParseAddr(value)
-			if err != nil {
-				return nil
-			}
-			prefix = netip.PrefixFrom(addr, addr.BitLen())
-		}
-		key := "ip_cidr"
-		if strings.HasPrefix(kind, "SRC-") {
-			key = "source_ip_cidr"
-		} else if (kind == "IP-CIDR6") != prefix.Addr().Is6() {
-			return nil
-		}
-		return moduleObject{key: prefix.String()}
-	case "DST-PORT", "DEST-PORT", "SRC-PORT":
-		key := "port"
-		if kind == "SRC-PORT" {
-			key = "source_port"
-		}
-		low, high, ranged := strings.Cut(value, "-")
-		first, err := strconv.ParseUint(low, 10, 16)
-		if err != nil {
-			return nil
-		}
-		if !ranged {
-			return moduleObject{key: first}
-		}
-		last, err := strconv.ParseUint(high, 10, 16)
-		if err != nil || last < first {
-			return nil
-		}
-		return moduleObject{key + "_range": fmt.Sprintf("%d:%d", first, last)}
-	case "PROTOCOL", "NETWORK":
-		value = strings.ToLower(value)
-		switch value {
-		case "tcp", "udp", "icmp":
-			return moduleObject{"network": value}
-		case "quic", "http", "tls", "dns":
-			return moduleObject{"protocol": value}
-		}
-	case "RULE-SET":
-		if !strings.Contains(value, "://") {
-			return moduleObject{"rule_set": value}
-		}
-	case "NETWORK-TYPE":
-		switch strings.ToLower(value) {
-		case "wifi", "cellular", "ethernet", "other":
-			return moduleObject{"network_type": strings.ToLower(value)}
-		}
+	}
+	for _, key := range order {
+		definition := definitions[key]
+		description.values["rule_set"] = append(description.values["rule_set"], definition)
 	}
 	return nil
 }
 
-func moduleRule(line string) (moduleObject, string, bool) {
-	parts, ok := moduleFields(line, true)
-	if !ok {
-		return nil, "", false
+func moduleHeadlessRuleMaps(rules []option.HeadlessRule) ([]moduleObject, error) {
+	data, err := json.Marshal(rules)
+	if err != nil {
+		return nil, err
 	}
-	if len(parts) == 2 && strings.EqualFold(parts[0], "FINAL") && moduleUnquote(parts[1]) != "" {
-		return moduleObject{}, moduleUnquote(parts[1]), true
-	}
-	if len(parts) < 3 || len(parts) > 4 || moduleUnquote(parts[2]) == "" {
-		return nil, "", false
-	}
-	kind := strings.ToUpper(parts[0])
-	if len(parts) == 4 && (!strings.EqualFold(parts[3], "no-resolve") || kind != "IP-CIDR" && kind != "IP-CIDR6") {
-		return nil, "", false
-	}
-	rule := moduleMatch(kind, moduleUnquote(parts[1]), 0)
-	return rule, moduleUnquote(parts[2]), rule != nil
+	var result []moduleObject
+	err = json.Unmarshal(data, &result)
+	return result, err
 }

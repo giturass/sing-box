@@ -148,8 +148,8 @@ func (m *ConnectionManager) NewConnection(ctx context.Context, this N.Dialer, co
 		var spliced bool
 		spliced, err = m.spliceConnection(ctx, conn, remoteConn, onClose)
 		if err != nil {
-			N.CloseOnHandshakeFailure(conn, onClose, err)
 			remoteConn.Close()
+			N.CloseOnHandshakeFailure(conn, onClose, err)
 			m.logger.ErrorContext(ctx, err)
 			return
 		}
@@ -342,10 +342,12 @@ func (m *ConnectionManager) finishConnectionCopy(ctx context.Context, source net
 		}
 	}
 	if done.Swap(true) {
+		// Routed HTTP transports join onClose before releasing their lifetime.
+		// Complete physical socket cleanup before publishing that completion.
+		common.Close(source, destination)
 		if onClose != nil {
 			onClose(err)
 		}
-		common.Close(source, destination)
 	}
 	if !direction {
 		if err == nil {
@@ -421,12 +423,13 @@ func (m *ConnectionManager) kickWriteHandshake(ctx context.Context, source net.C
 			return false, sourceEOF
 		}
 	}
-	if !done.Swap(true) {
+	firstClose := !done.Swap(true)
+	common.Close(source, destination)
+	if firstClose {
 		if onClose != nil {
 			onClose(err)
 		}
 	}
-	common.Close(source, destination)
 	if !direction {
 		m.logger.ErrorContext(ctx, "connection upload handshake: ", err)
 	} else {
@@ -454,12 +457,15 @@ func (m *ConnectionManager) packetConnectionCopy(ctx context.Context, source N.P
 			m.logger.DebugContext(ctx, "packet download closed: ", err)
 		}
 	}
-	if !done.Swap(true) {
+	firstClose := !done.Swap(true)
+	// A request policy's close callback owns the route lifetime. Its caller
+	// must not return while this manager still owns a physical UDP socket.
+	common.Close(source, destination)
+	if firstClose {
 		if onClose != nil {
 			onClose(err)
 		}
 	}
-	common.Close(source, destination)
 }
 
 type socketOwner struct {

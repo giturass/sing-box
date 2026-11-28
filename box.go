@@ -114,6 +114,11 @@ func New(options Options) (*Box, error) {
 		ctx = context.Background()
 	}
 	ctx = service.ContextWithDefaultRegistry(ctx)
+	scriptDeclarations, scriptErr := options.Options.ScriptDeclarations()
+	if scriptErr != nil {
+		return nil, scriptErr
+	}
+	ctx = service.ContextWith(ctx, scriptDeclarations)
 
 	endpointRegistry := service.FromContext[adapter.EndpointRegistry](ctx)
 	inboundRegistry := service.FromContext[adapter.InboundRegistry](ctx)
@@ -664,6 +669,11 @@ func (s *Box) start() error {
 }
 
 func (s *Box) Close() error {
+	// Scope children close in reverse order. Join script-selected DNS queries
+	// before the outbound child is torn down, including direct Box users.
+	if s.dnsRouter != nil {
+		return E.Errors(s.dnsRouter.StopScriptDNS(), s.scope.Close())
+	}
 	return s.scope.Close()
 }
 

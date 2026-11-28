@@ -154,6 +154,7 @@ func TestBboxHTTPDebugKeepsSelectedRouteAndReplaysUnmatchedBytes(t *testing.T) {
 		testBboxHTTPDebugPreSniffedTCPKeepsCacheCountersAndHalfClose(t, directory)
 	})
 	testBboxHTTPDebugQUIC(t, directory)
+	t.Run("native-request-routing-script", func(t *testing.T) { testBboxHTTPRequestRoutingWithNativeRulesAndScript(t, directory) })
 }
 
 func testBboxHTTPDebugConnectionID(t *testing.T, directory string) {

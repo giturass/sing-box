@@ -59,16 +59,13 @@ func NewRawDomainItem(matcher *domain.Matcher) *DomainItem {
 }
 
 func (r *DomainItem) Match(metadata *adapter.InboundContext) bool {
-	var domainHost string
-	if metadata.Domain != "" {
-		domainHost = metadata.Domain
-	} else {
-		domainHost = metadata.Destination.Fqdn
+	for _, domainHost := range httpRuleDomains(metadata) {
+		if r.matcher.Match(domainHost) {
+			return true
+		}
 	}
-	if domainHost == "" {
-		return false
-	}
-	return r.matcher.Match(strings.ToLower(domainHost))
+	markPendingHTTPDomain(metadata)
+	return false
 }
 
 func (r *DomainItem) String() string {

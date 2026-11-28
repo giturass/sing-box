@@ -60,14 +60,21 @@ func (r *RuleSetItem) Close() error {
 
 func (r *RuleSetItem) Match(metadata *adapter.InboundContext) bool {
 	snapshot := snapshotRuleMatch(metadata)
+	pendingHTTP := false
 	for _, ruleSet := range r.setList {
 		r.prepareNestedMatch(metadata)
 		if ruleSet.Match(metadata) {
 			snapshot.restore(metadata)
+			metadata.RuleMatchPendingHTTP = false
 			return true
+		}
+		pendingHTTP = pendingHTTP || metadata.RuleMatchPendingHTTP
+		if metadata.RuleMatchError != nil {
+			break
 		}
 	}
 	snapshot.restore(metadata)
+	metadata.RuleMatchPendingHTTP = pendingHTTP
 	return false
 }
 
@@ -76,6 +83,7 @@ func (r *RuleSetItem) matchWithOuterGroups(metadata *adapter.InboundContext, out
 	var (
 		matched        bool
 		deferredGroups uint8
+		pendingHTTP    bool
 	)
 	snapshot := snapshotRuleMatch(metadata)
 	for _, ruleSet := range r.setList {
@@ -93,12 +101,14 @@ func (r *RuleSetItem) matchWithOuterGroups(metadata *adapter.InboundContext, out
 						if branchDeferredGroups == 0 {
 							snapshot.restore(metadata)
 							metadata.DeferredIPCIDRMatchGroups &^= uint8(merged.satisfied)
+							metadata.RuleMatchPendingHTTP = false
 							return true
 						}
 						matched = true
 						deferredGroups |= branchDeferredGroups
 					}
 				}
+				pendingHTTP = pendingHTTP || metadata.RuleMatchPendingHTTP
 				continue
 			}
 			rule = content
@@ -106,13 +116,19 @@ func (r *RuleSetItem) matchWithOuterGroups(metadata *adapter.InboundContext, out
 		if outerDone && rule.Match(metadata) {
 			if metadata.DeferredIPCIDRMatchGroups == 0 {
 				snapshot.restore(metadata)
+				metadata.RuleMatchPendingHTTP = false
 				return true
 			}
 			matched = true
 			deferredGroups |= metadata.DeferredIPCIDRMatchGroups
 		}
+		pendingHTTP = pendingHTTP || metadata.RuleMatchPendingHTTP
+		if metadata.RuleMatchError != nil {
+			break
+		}
 	}
 	snapshot.restore(metadata)
+	metadata.RuleMatchPendingHTTP = pendingHTTP && !matched
 	if matched {
 		metadata.DeferredIPCIDRMatchGroups |= deferredGroups
 	}
@@ -149,6 +165,7 @@ func (c *ruleSetContent) Match(metadata *adapter.InboundContext) bool {
 	var (
 		matched        bool
 		deferredGroups uint8
+		pendingHTTP    bool
 	)
 	snapshot := snapshotRuleMatch(metadata)
 	for _, rule := range c.rules {
@@ -156,13 +173,19 @@ func (c *ruleSetContent) Match(metadata *adapter.InboundContext) bool {
 		if rule.Match(metadata) {
 			if metadata.DeferredIPCIDRMatchGroups == 0 {
 				snapshot.restore(metadata)
+				metadata.RuleMatchPendingHTTP = false
 				return true
 			}
 			matched = true
 			deferredGroups |= metadata.DeferredIPCIDRMatchGroups
 		}
+		pendingHTTP = pendingHTTP || metadata.RuleMatchPendingHTTP
+		if metadata.RuleMatchError != nil {
+			break
+		}
 	}
 	snapshot.restore(metadata)
+	metadata.RuleMatchPendingHTTP = pendingHTTP && !matched
 	if matched {
 		metadata.DeferredIPCIDRMatchGroups |= deferredGroups
 	}

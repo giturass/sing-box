@@ -70,6 +70,28 @@ type InboundContext struct {
 	SnifferNames  []string
 	SniffError    error
 
+	// Parsed HTTP request attributes are distinct from connection sniffing.
+	// They are populated for every request, including multiplexed TLS/QUIC.
+	HTTPURL              string
+	HTTPUserAgent        string
+	HTTPHost             string
+	HTTPServerName       string
+	HTTPExtendedMatching bool
+	SurgeNoResolve       bool
+
+	// One route/DNS evaluation owns its context, cancellation and script cache.
+	// ResetRuleCache only resets per-rule match groups, never this evaluation.
+	RuleMatchContext context.Context
+	// DNSFlow also covers legacy lookups which have no query-type metadata.
+	// Rule destination resolution and request scripts are unavailable here.
+	DNSFlow                  bool
+	RuleMatchError           error
+	RuleScriptResults        map[string]bool
+	RuleMatchDNSResolved     bool
+	RuleMatchNeedsResolution bool
+	RuleMatchNeedsHTTP       bool
+	RuleMatchPendingHTTP     bool
+
 	// cache
 
 	// Deprecated: implement in rule action
@@ -131,6 +153,7 @@ func (c *InboundContext) ResetRuleMatchCache() {
 	c.DestinationAddressMatch = false
 	c.DestinationPortMatch = false
 	c.DeferredIPCIDRMatchGroups = 0
+	c.RuleMatchPendingHTTP = false
 }
 
 func (c *InboundContext) DNSResponseAddressesForMatch() []netip.Addr {

@@ -21,7 +21,7 @@ import (
 type _RuleSet struct {
 	Type          string                     `json:"type,omitempty" enum:"inline,local,remote"`
 	Tag           badoption.Listable[string] `json:"tag"`
-	Format        string                     `json:"format,omitempty" enum:"source,binary"`
+	Format        string                     `json:"format,omitempty" enum:"source,binary,surge-rule-set,surge-domain-set"`
 	InlineOptions PlainRuleSet               `json:"-"`
 	LocalOptions  LocalRuleSet               `json:"-"`
 	RemoteOptions RemoteRuleSet              `json:"-"`
@@ -93,7 +93,7 @@ func (r *RuleSet) UnmarshalJSON(bytes []byte) error {
 		switch r.Format {
 		case "":
 			return E.New("missing format")
-		case C.RuleSetFormatSource, C.RuleSetFormatBinary:
+		case C.RuleSetFormatSource, C.RuleSetFormatBinary, C.RuleSetFormatSurgeRules, C.RuleSetFormatSurgeDomains:
 		default:
 			return E.New("unknown rule-set format: " + r.Format)
 		}
@@ -116,6 +116,9 @@ func (r *RuleSet) UnmarshalJSON(bytes []byte) error {
 				return E.New("missing ", C.RuleSetTagPlaceholder, " placeholder in initial_path")
 			}
 		}
+	}
+	if r.Type == C.RuleSetTypeRemote && r.RemoteOptions.ScriptNamespace != "" && r.Format != C.RuleSetFormatSurgeRules {
+		return E.New("script_namespace is only supported by Surge RULE-SET resources")
 	}
 	return nil
 }
@@ -141,7 +144,7 @@ func (r RuleSet) DescribeSchema(builder schema.Builder) (*schema.Node, error) {
 			return nil, err
 		}
 		tagNode := schema.ListableOf(schema.StringNode())
-		formatNode := schema.StringEnum(C.RuleSetFormatSource, C.RuleSetFormatBinary)
+		formatNode := schema.StringEnum(C.RuleSetFormatSource, C.RuleSetFormatBinary, C.RuleSetFormatSurgeRules, C.RuleSetFormatSurgeDomains)
 
 		inlineVariant := schema.StrictObject()
 		inlineVariant.Properties.Put("type", schema.StringEnum(C.RuleSetTypeInline, ""))
@@ -178,10 +181,11 @@ type LocalRuleSet struct {
 }
 
 type RemoteRuleSet struct {
-	URL            string             `json:"url"`
-	InitialPath    string             `json:"initial_path,omitempty"`
-	HTTPClient     *HTTPClientOptions `json:"http_client,omitempty"`
-	UpdateInterval badoption.Duration `json:"update_interval,omitempty"`
+	URL             string             `json:"url"`
+	ScriptNamespace string             `json:"script_namespace,omitempty"`
+	InitialPath     string             `json:"initial_path,omitempty"`
+	HTTPClient      *HTTPClientOptions `json:"http_client,omitempty"`
+	UpdateInterval  badoption.Duration `json:"update_interval,omitempty"`
 	// Deprecated: use http_client instead
 	DownloadDetour string `json:"download_detour,omitempty" reference:"outbound" schema:"omit"`
 }
@@ -250,10 +254,19 @@ func (r HeadlessRule) DescribeSchema(builder schema.Builder) (*schema.Node, erro
 type DefaultHeadlessRule struct {
 	QueryType               badoption.Listable[DNSQueryType]                                            `json:"query_type,omitempty"`
 	Network                 badoption.Listable[string]                                                  `json:"network,omitempty" enum:"tcp,udp,icmp"`
+	Protocol                badoption.Listable[string]                                                  `json:"protocol,omitempty"`
+	SurgeProtocol           badoption.Listable[string]                                                  `json:"surge_protocol,omitempty" enum:"HTTP,HTTPS,TCP,UDP,QUIC,STUN"`
 	Domain                  badoption.Listable[string]                                                  `json:"domain,omitempty"`
 	DomainSuffix            badoption.Listable[string]                                                  `json:"domain_suffix,omitempty"`
 	DomainKeyword           badoption.Listable[string]                                                  `json:"domain_keyword,omitempty"`
 	DomainRegex             badoption.Listable[string]                                                  `json:"domain_regex,omitempty"`
+	HTTPURLRegex            badoption.Listable[string]                                                  `json:"http_url_regex,omitempty"`
+	HTTPUserAgent           badoption.Listable[string]                                                  `json:"http_user_agent,omitempty"`
+	HTTPExtendedMatching    bool                                                                        `json:"http_extended_matching,omitempty"`
+	Script                  string                                                                      `json:"script,omitempty"`
+	ScriptRequiresResolve   bool                                                                        `json:"script_requires_resolve,omitempty"`
+	SurgeIPCIDR             bool                                                                        `json:"surge_ip_cidr,omitempty"`
+	SurgeNoResolve          bool                                                                        `json:"surge_no_resolve,omitempty"`
 	SourceIPCIDR            badoption.Listable[*badoption.Prefixable]                                   `json:"source_ip_cidr,omitempty"`
 	IPCIDR                  badoption.Listable[*badoption.Prefixable]                                   `json:"ip_cidr,omitempty"`
 	SourcePort              badoption.Listable[uint16]                                                  `json:"source_port,omitempty"`

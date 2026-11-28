@@ -138,16 +138,26 @@ func logicalProperties(node *schema.Node, nestedRef *schema.Node) {
 }
 
 type RawDefaultRule struct {
-	Inbound                  badoption.Listable[string]                                                  `json:"inbound,omitempty" reference:"inbound"`
-	IPVersion                int                                                                         `json:"ip_version,omitempty" enum:"4,6"`
-	Network                  badoption.Listable[string]                                                  `json:"network,omitempty" enum:"tcp,udp,icmp"`
-	AuthUser                 badoption.Listable[string]                                                  `json:"auth_user,omitempty"`
-	Protocol                 badoption.Listable[string]                                                  `json:"protocol,omitempty" enum:"tls,http,quic,dns,stun,bittorrent,dtls,ssh,rdp,ntp"`
-	Client                   badoption.Listable[string]                                                  `json:"client,omitempty"`
-	Domain                   badoption.Listable[string]                                                  `json:"domain,omitempty"`
-	DomainSuffix             badoption.Listable[string]                                                  `json:"domain_suffix,omitempty"`
-	DomainKeyword            badoption.Listable[string]                                                  `json:"domain_keyword,omitempty"`
-	DomainRegex              badoption.Listable[string]                                                  `json:"domain_regex,omitempty"`
+	Inbound               badoption.Listable[string] `json:"inbound,omitempty" reference:"inbound"`
+	IPVersion             int                        `json:"ip_version,omitempty" enum:"4,6"`
+	Network               badoption.Listable[string] `json:"network,omitempty" enum:"tcp,udp,icmp"`
+	AuthUser              badoption.Listable[string] `json:"auth_user,omitempty"`
+	Protocol              badoption.Listable[string] `json:"protocol,omitempty" enum:"tls,http,quic,dns,stun,bittorrent,dtls,ssh,rdp,ntp"`
+	SurgeProtocol         badoption.Listable[string] `json:"surge_protocol,omitempty" enum:"HTTP,HTTPS,TCP,UDP,QUIC,STUN"`
+	Client                badoption.Listable[string] `json:"client,omitempty"`
+	Domain                badoption.Listable[string] `json:"domain,omitempty"`
+	DomainSuffix          badoption.Listable[string] `json:"domain_suffix,omitempty"`
+	DomainKeyword         badoption.Listable[string] `json:"domain_keyword,omitempty"`
+	DomainRegex           badoption.Listable[string] `json:"domain_regex,omitempty"`
+	HTTPURLRegex          badoption.Listable[string] `json:"http_url_regex,omitempty"`
+	HTTPUserAgent         badoption.Listable[string] `json:"http_user_agent,omitempty"`
+	HTTPExtendedMatching  bool                       `json:"http_extended_matching,omitempty"`
+	Script                string                     `json:"script,omitempty"`
+	ScriptRequiresResolve bool                       `json:"script_requires_resolve,omitempty"`
+	// Surge IP rules resolve lazily and match the first address of their family.
+	// Native ip_cidr keeps its existing explicit-resolution / any-address semantics.
+	SurgeIPCIDR              bool                                                                        `json:"surge_ip_cidr,omitempty"`
+	SurgeNoResolve           bool                                                                        `json:"surge_no_resolve,omitempty"`
 	Geosite                  badoption.Listable[string]                                                  `json:"geosite,omitempty" schema:"omit"`
 	SourceGeoIP              badoption.Listable[string]                                                  `json:"source_geoip,omitempty" schema:"omit"`
 	GeoIP                    badoption.Listable[string]                                                  `json:"geoip,omitempty" schema:"omit"`

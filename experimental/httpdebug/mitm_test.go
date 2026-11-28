@@ -83,7 +83,7 @@ func originCertificate(t *testing.T, host string, expired bool) (tls.Certificate
 	return tls.Certificate{Certificate: [][]byte{der, rootDER}, PrivateKey: key, Leaf: parsed}, pool
 }
 
-func mitmClient(t *testing.T, e *Engine, origin string, ca, roots *x509.CertPool, h2 bool) (*http.Client, *atomic.Int32) {
+func mitmClient(t *testing.T, e *Engine, origin string, ca, roots *x509.CertPool, h2 bool, routes ...RequestRouteFunc) (*http.Client, *atomic.Int32) {
 	t.Helper()
 	dials := &atomic.Int32{}
 	var connections atomic.Int32
@@ -94,12 +94,12 @@ func mitmClient(t *testing.T, e *Engine, origin string, ca, roots *x509.CertPool
 			if err != nil {
 				return nil, err
 			}
-			if !e.Handle(context.Background(), inbound, Metadata{ConnectionID: fmt.Sprintf("mitm-client-%d", connections.Add(1)), Host: "origin.test", Port: 443, Protocol: "tls",
+			if !e.HandleRouted(context.Background(), inbound, Metadata{ConnectionID: fmt.Sprintf("mitm-client-%d", connections.Add(1)), Host: "origin.test", Port: 443, Protocol: "tls",
 				Outbound: "selected-route", Rule: "selected-rule", UID: 1234, Packages: []string{"com.test"}},
 				func(ctx context.Context) (net.Conn, error) {
 					dials.Add(1)
 					return (&net.Dialer{}).DialContext(ctx, "tcp", origin)
-				}, roots, nil) {
+				}, nil, roots, nil, routes...) {
 				client.Close()
 				inbound.Close()
 				return nil, errors.New("MITM did not accept the test connection")

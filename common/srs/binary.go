@@ -326,6 +326,9 @@ func readDefaultRule(reader varbin.Reader, recover bool, mmap *mmapReader) (rule
 }
 
 func writeDefaultRule(writer varbin.Writer, rule option.DefaultHeadlessRule, generateVersion uint8, mmap *mmapWriter) error {
+	if len(rule.Protocol) > 0 || len(rule.SurgeProtocol) > 0 || len(rule.HTTPURLRegex) > 0 || len(rule.HTTPUserAgent) > 0 || rule.HTTPExtendedMatching || rule.Script != "" || rule.ScriptRequiresResolve || rule.SurgeIPCIDR || rule.SurgeNoResolve {
+		return E.New("HTTP, script and Surge matching conditions cannot be represented by the sing-box binary rule-set format")
+	}
 	err := binary.Write(writer, binary.BigEndian, uint8(0))
 	if err != nil {
 		return err

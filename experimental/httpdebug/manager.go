@@ -133,6 +133,8 @@ type State struct {
 	EventScriptsRunning   int    `json:"eventScriptsRunning"`
 	GenericScriptsRunning int    `json:"genericScriptsRunning"`
 	StreamScriptsRunning  int    `json:"streamScriptsRunning"`
+	RuleScriptsRunning    int    `json:"ruleScriptsRunning"`
+	DNSScriptsRunning     int    `json:"dnsScriptsRunning"`
 	BreakpointRules       int    `json:"breakpointRules"`
 	PausedMessages        int    `json:"pausedMessages"`
 }
@@ -178,7 +180,8 @@ func (engine *Engine) captureState() State {
 		BodyBudgetReserved: processingBodies.used.Load(), BodyBudgetLimit: processingBodies.limit,
 		HTTPScriptsRunning: int(httpScriptsRunning.Load()), CronScriptsRunning: int(cronScriptsRunning.Load()),
 		EventScriptsRunning: int(eventScriptsRunning.Load()), GenericScriptsRunning: int(genericScriptsRunning.Load()),
-		StreamScriptsRunning: int(streamScriptsRunning.Load())}
+		StreamScriptsRunning: int(streamScriptsRunning.Load()),
+		RuleScriptsRunning:   int(ruleScriptsRunning.Load()), DNSScriptsRunning: int(dnsScriptsRunning.Load())}
 }
 
 func (engine *Engine) backend() string {

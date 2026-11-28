@@ -68,7 +68,7 @@ func (r *Router) routeQUICDebug(ctx context.Context, conn N.PacketConn, metadata
 		go r.RouteConnectionEx(mappedCtx, routed, mappedMetadata, func(error) { _ = routed.Close() })
 		return local, nil
 	}
-	return selection.engine.HandleQUIC(ctx, client, info, dial, mapped, adapter.RootPoolFromContext(r.ctx), onClose)
+	return selection.engine.HandleQUIC(ctx, client, info, dial, mapped, adapter.RootPoolFromContext(r.ctx), onClose, r.debugRequestRouter(metadata, "quic"))
 }
 
 func (s *debugQUICSelection) metadataWithRoute(route httpdebug.Metadata) httpdebug.Metadata {

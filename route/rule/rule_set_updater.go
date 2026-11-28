@@ -3,6 +3,7 @@ package rule
 import (
 	"context"
 	"runtime"
+	"sync"
 	"time"
 
 	"github.com/sagernet/sing-box/adapter"
@@ -12,13 +13,17 @@ type RuleSetUpdater struct {
 	ctx      context.Context
 	cancel   context.CancelFunc
 	ruleSets []*RemoteRuleSet
+	access   sync.Mutex
+	started  bool
+	closed   bool
+	wg       sync.WaitGroup
 }
 
 func NewRuleSetUpdater(ctx context.Context, ruleSets []adapter.RuleSet) *RuleSetUpdater {
 	var remoteRuleSets []*RemoteRuleSet
 	for _, ruleSet := range ruleSets {
 		remoteRuleSet, isRemote := ruleSet.(*RemoteRuleSet)
-		if isRemote {
+		if isRemote && !remoteRuleSet.updatesDisabled {
 			remoteRuleSets = append(remoteRuleSets, remoteRuleSet)
 		}
 	}
@@ -34,20 +39,36 @@ func NewRuleSetUpdater(ctx context.Context, ruleSets []adapter.RuleSet) *RuleSet
 }
 
 func (u *RuleSetUpdater) Start() {
-	go u.loopUpdate()
+	u.access.Lock()
+	defer u.access.Unlock()
+	if u.started || u.closed {
+		return
+	}
+	u.started = true
+	for _, ruleSet := range u.ruleSets {
+		u.wg.Add(1)
+		go func(ruleSet *RemoteRuleSet) { defer u.wg.Done(); u.loopUpdate(ruleSet) }(ruleSet)
+	}
 }
 
 func (u *RuleSetUpdater) Close() error {
+	u.access.Lock()
+	u.closed = true
 	u.cancel()
+	u.access.Unlock()
+	u.wg.Wait()
 	return nil
 }
 
-func (u *RuleSetUpdater) loopUpdate() {
-	nextUpdates := make([]time.Time, len(u.ruleSets))
-	for i, ruleSet := range u.ruleSets {
-		nextUpdates[i] = ruleSet.lastUpdated.Add(ruleSet.updateInterval)
+func (u *RuleSetUpdater) loopUpdate(ruleSet *RemoteRuleSet) {
+	ruleSet.access.Lock()
+	nextUpdate := ruleSet.lastUpdated.Add(ruleSet.updateInterval)
+	ruleSet.access.Unlock()
+	wait := time.Until(nextUpdate)
+	if wait < 0 {
+		wait = 0
 	}
-	timer := time.NewTimer(0)
+	timer := time.NewTimer(wait)
 	defer timer.Stop()
 	for {
 		select {
@@ -55,20 +76,12 @@ func (u *RuleSetUpdater) loopUpdate() {
 			return
 		case <-timer.C:
 		}
-		now := time.Now()
-		var updated bool
-		for i, ruleSet := range u.ruleSets {
-			if now.Before(nextUpdates[i]) {
-				continue
-			}
-			ruleSet.updateOnce()
-			nextUpdates[i] = now.Add(ruleSet.updateInterval)
-			updated = true
+		ruleSet.updateOnce(u.ctx)
+		if u.ctx.Err() != nil {
+			return
 		}
-		if updated {
-			runtime.GC()
-		}
-		timer.Reset(waitUntilNext(nextUpdates))
+		runtime.GC()
+		timer.Reset(ruleSet.updateInterval)
 	}
 }
 

@@ -57,12 +57,16 @@ func (r *Exchange) searchText() string {
 	if r.search != "" {
 		return r.search
 	}
-	text := strings.ToLower(strings.Join([]string{
+	fields := []string{
 		r.ID, r.Metadata.ConnectionID, r.Request.URL, r.OriginalURL, r.Request.Method,
 		r.Request.Protocol, strconv.Itoa(r.Response.Status), strings.Join(r.Metadata.Packages, ", "),
 		r.Metadata.Source, r.Metadata.Destination, r.Metadata.Inbound, r.Metadata.Outbound,
 		r.Metadata.Rule, r.Error,
-	}, " "))
+	}
+	if route := r.Metadata.RequestRoute; route != nil {
+		fields = append(fields, route.Outbound, route.Rule, route.Destination, route.Network)
+	}
+	text := strings.ToLower(strings.Join(fields, " "))
 	if r.Complete {
 		r.search = text
 	}
@@ -265,7 +269,8 @@ func captureSummary(r *Exchange, now int64) Summary {
 		Method: r.Request.Method, URL: r.Request.URL, OriginalURL: r.OriginalURL, Protocol: r.Request.Protocol, Status: r.Response.Status,
 		Packages: slices.Clone(r.Metadata.Packages), Source: r.Metadata.Source, Destination: r.Metadata.Destination,
 		Inbound: r.Metadata.Inbound, Outbound: r.Metadata.Outbound, Rule: r.Metadata.Rule,
-		Bytes: r.Request.BodyBytes + r.Response.BodyBytes, RequestBytes: r.Request.BodyBytes, ResponseBytes: r.Response.BodyBytes,
+		RequestRoute: r.Metadata.RequestRoute,
+		Bytes:        r.Request.BodyBytes + r.Response.BodyBytes, RequestBytes: r.Request.BodyBytes, ResponseBytes: r.Response.BodyBytes,
 		Error: r.Error, DomainOnly: r.DomainOnly,
 		StreamID: r.Metadata.StreamID, ParentID: r.Metadata.ParentID, Direction: r.Metadata.Direction,
 		Opcode: r.Metadata.Opcode, Injected: r.Metadata.Injected, Dropped: r.Metadata.Dropped,

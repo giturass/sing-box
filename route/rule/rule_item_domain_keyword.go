@@ -17,21 +17,14 @@ func NewDomainKeywordItem(keywords []string) *DomainKeywordItem {
 }
 
 func (r *DomainKeywordItem) Match(metadata *adapter.InboundContext) bool {
-	var domainHost string
-	if metadata.Domain != "" {
-		domainHost = metadata.Domain
-	} else {
-		domainHost = metadata.Destination.Fqdn
-	}
-	if domainHost == "" {
-		return false
-	}
-	domainHost = strings.ToLower(domainHost)
-	for _, keyword := range r.keywords {
-		if strings.Contains(domainHost, keyword) {
-			return true
+	for _, domainHost := range httpRuleDomains(metadata) {
+		for _, keyword := range r.keywords {
+			if strings.Contains(domainHost, keyword) {
+				return true
+			}
 		}
 	}
+	markPendingHTTPDomain(metadata)
 	return false
 }
 

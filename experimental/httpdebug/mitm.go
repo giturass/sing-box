@@ -23,7 +23,7 @@ var errHelloInspected = errors.New("ClientHello inspected without a TLS response
 // SelectTLS reads only the ClientHello, using Go's TLS parser. All bytes are
 // replayed, including unsupported hellos and unmatched names.
 // The probe cannot write an alert or a ServerHello to the real client.
-func (e *Engine) SelectTLS(ctx context.Context, conn net.Conn, metadata Metadata) (net.Conn, Metadata, bool) {
+func (e *Engine) SelectTLS(ctx context.Context, conn net.Conn, metadata Metadata, requestOnly ...bool) (net.Conn, Metadata, bool) {
 	if e.ca == nil || !e.mitm.candidate(metadata) {
 		metadata.ProcessingReason = "TLS passed through: MITM disabled or outside configured port/application scope"
 		return conn, metadata, false
@@ -70,6 +70,10 @@ func (e *Engine) SelectTLS(ctx context.Context, conn net.Conn, metadata Metadata
 	metadata.RawTCP = e.mitm.TCP && (len(protos) == 0 || slices.ContainsFunc(protos, func(proto string) bool {
 		return proto != "h2" && proto != "http/1.1"
 	}))
+	if len(requestOnly) > 0 && requestOnly[0] && metadata.RawTCP {
+		metadata.ProcessingReason = "Rejected connection cannot use raw TLS processing"
+		return replay, metadata, false
+	}
 	if len(protos) > 0 && !metadata.RawTCP && !slices.Contains(protos, "http/1.1") && !(e.mitm.H2 && slices.Contains(protos, "h2")) {
 		metadata.ProcessingReason = "TLS passed through: non-HTTP ALPN and TCP decryption disabled"
 		if slices.Contains(protos, "h2") {
@@ -113,7 +117,7 @@ func (c *replayConn) Read(buffer []byte) (int, error) { return c.reader.Read(buf
 // Keep the upstream-first handshake order, applying the profile's certificate
 // verification choice. Reuse that same connection for HTTP or raw TLS traffic.
 func (e *Engine) openMITM(ctx context.Context, raw net.Conn, metadata Metadata, dial DialFunc, roots *x509.CertPool) (net.Conn, *http.Transport, Metadata, func(), error) {
-	if !metadata.RawTCP && e.httpProgram(metadata) != nil {
+	if !metadata.RawTCP && (e.httpProgram(metadata) != nil || e.httpRouting != nil && e.httpRouting.Enabled) {
 		return e.openRewriteMITM(ctx, raw, metadata, dial, roots)
 	}
 	e.tlsOpened.Add(1)

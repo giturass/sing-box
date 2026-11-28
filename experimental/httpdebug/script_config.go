@@ -26,6 +26,8 @@ type ScriptsConfig struct {
 	Cron         []CronScript               `json:"cron,omitempty"`
 	Event        []EventScript              `json:"event,omitempty"`
 	Generic      []GenericScript            `json:"generic,omitempty"`
+	Rule         []GenericScript            `json:"rule,omitempty"`
+	DNS          []GenericScript            `json:"dns,omitempty"`
 	Resources    map[string]RewriteResource `json:"resources,omitempty"`
 }
 
@@ -149,6 +151,8 @@ type ScriptProgram struct {
 	cron       []compiledCron
 	event      []compiledTask
 	generic    []compiledTask
+	rule       map[string]compiledTask
+	dns        map[string]compiledTask
 	tasks      map[scriptTaskKey]compiledTask
 	storage    *scriptStore
 	resources  *processingResources
@@ -211,7 +215,7 @@ func CompileScripts(c *ScriptsConfig, location *time.Location) (*ScriptProgram, 
 	if err := scope.validate(); err != nil {
 		return nil, fmt.Errorf("scripts scope: %w", err)
 	}
-	p := &ScriptProgram{scope: scope, limit: limit, tasks: make(map[scriptTaskKey]compiledTask)}
+	p := &ScriptProgram{scope: scope, limit: limit, tasks: make(map[scriptTaskKey]compiledTask), rule: make(map[string]compiledTask), dns: make(map[string]compiledTask)}
 	for name, resource := range c.Resources {
 		if name == "" {
 			return nil, errors.New("invalid script resource name")
@@ -310,6 +314,26 @@ func CompileScripts(c *ScriptsConfig, location *time.Location) (*ScriptProgram, 
 		if !rule.Disable {
 			p.tasks[task.key] = task
 			p.generic = append(p.generic, task)
+		}
+	}
+	for _, group := range []struct {
+		kind        string
+		rules       []GenericScript
+		destination map[string]compiledTask
+	}{{"rule", c.Rule, p.rule}, {"dns", c.DNS, p.dns}} {
+		names := make(map[string]bool)
+		for i, rule := range group.rules {
+			if strings.TrimSpace(rule.Name) == "" || names[rule.Name] {
+				return nil, fmt.Errorf("scripts.%s[%d]: each script requires a unique non-empty name", group.kind, i)
+			}
+			names[rule.Name] = true
+			task, err := compileTask(scriptTaskKey{group.kind, i}, rule, c.Resources)
+			if err != nil {
+				return nil, err
+			}
+			if !rule.Disable {
+				group.destination[rule.Name] = task
+			}
 		}
 	}
 	return p, nil

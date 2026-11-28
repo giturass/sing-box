@@ -109,6 +109,7 @@ func (r *Router) routeConnection(ctx context.Context, conn net.Conn, metadata ad
 		return err
 	}
 	var selectedOutbound adapter.Outbound
+	var deferredReject *R.RuleActionReject
 	if selectedRule != nil {
 		switch action := selectedRule.Action().(type) {
 		case *R.RuleActionRoute:
@@ -129,6 +130,14 @@ func (r *Router) routeConnection(ctx context.Context, conn net.Conn, metadata ad
 				return E.New("outbound not found: ", action.Outbound)
 			}
 		case *R.RuleActionReject:
+			if metadata.HTTPURL == "" && metadata.RuleMatchNeedsHTTP && r.debugCanDeferReject(ctx, metadata) {
+				// Request conditions earlier in the ordered list are still unknown.
+				// Track the pending rejection without selecting a default outbound;
+				// only a parsed HTTP request may replace it with an allowed route.
+				deferredReject = action
+				selectedOutbound = &debugRequestRejectOutbound{action: action}
+				break
+			}
 			buf.ReleaseMulti(buffers)
 			if action.Method == C.RuleActionRejectMethodReply {
 				return E.New("reject method `reply` is not supported for TCP connections")
@@ -167,6 +176,21 @@ func (r *Router) routeConnection(ctx context.Context, conn net.Conn, metadata ad
 	var captured bool
 	conn, captured = r.routeHTTPDebug(ctx, conn, metadata, outbound, onClose)
 	if captured {
+		return nil
+	}
+	if deferredReject != nil {
+		rejectErr := deferredReject.Error(ctx)
+		if deferredReject.Method == C.RuleActionRejectMethodReply {
+			rejectErr = E.New("reject method `reply` is not supported for TCP connections")
+		}
+		// Close the local sniffing/tracking wrappers as well as the socket. The
+		// outer RouteConnectionEx only owns the original incoming connection.
+		N.CloseOnHandshakeFailure(conn, onClose, rejectErr)
+		if E.IsClosedOrCanceled(rejectErr) || R.IsRejected(rejectErr) {
+			r.logger.DebugContext(ctx, "connection closed: ", rejectErr)
+		} else {
+			r.logger.ErrorContext(ctx, rejectErr)
+		}
 		return nil
 	}
 	if outboundHandler, isHandler := outbound.(adapter.ConnectionHandler); isHandler {
@@ -275,6 +299,7 @@ func (r *Router) routePacketConnection(ctx context.Context, conn N.PacketConn, m
 	}
 	var selectedOutbound adapter.Outbound
 	var selectReturn bool
+	var deferredReject *R.RuleActionReject
 	if selectedRule != nil {
 		switch action := selectedRule.Action().(type) {
 		case *R.RuleActionRoute:
@@ -295,6 +320,11 @@ func (r *Router) routePacketConnection(ctx context.Context, conn N.PacketConn, m
 				return E.New("outbound not found: ", action.Outbound)
 			}
 		case *R.RuleActionReject:
+			if metadata.HTTPURL == "" && metadata.RuleMatchNeedsHTTP && r.debugCanDeferReject(ctx, metadata) {
+				deferredReject = action
+				selectedOutbound = &debugRequestRejectOutbound{action: action}
+				break
+			}
 			N.ReleaseMultiPacketBuffer(packetBuffers)
 			if action.Method == C.RuleActionRejectMethodReply {
 				return E.New("reject method `reply` is not supported for UDP connections")
@@ -322,6 +352,13 @@ func (r *Router) routePacketConnection(ctx context.Context, conn N.PacketConn, m
 		N.ReleaseMultiPacketBuffer(packetBuffers)
 		return E.New("QUIC rejected by local MITM capture; retry over TCP")
 	}
+	if deferredReject != nil && quicSelection == nil {
+		N.ReleaseMultiPacketBuffer(packetBuffers)
+		if deferredReject.Method == C.RuleActionRejectMethodReply {
+			return E.New("reject method `reply` is not supported for UDP connections")
+		}
+		return deferredReject.Error(ctx)
+	}
 	for _, buffer := range slices.Backward(packetBuffers) {
 		conn = bufio.NewCachedPacketConn(conn, buffer.Buffer, buffer.Destination)
 		N.PutPacketBuffer(buffer)
@@ -343,6 +380,19 @@ func (r *Router) routePacketConnection(ctx context.Context, conn N.PacketConn, m
 	if r.routeQUICDebug(ctx, conn, metadata, outbound, quicSelection, onClose) {
 		return nil
 	}
+	if deferredReject != nil {
+		rejectErr := deferredReject.Error(ctx)
+		if deferredReject.Method == C.RuleActionRejectMethodReply {
+			rejectErr = E.New("reject method `reply` is not supported for UDP connections")
+		}
+		N.CloseOnHandshakeFailure(conn, onClose, rejectErr)
+		if E.IsClosedOrCanceled(rejectErr) || R.IsRejected(rejectErr) {
+			r.logger.DebugContext(ctx, "connection closed: ", rejectErr)
+		} else {
+			r.logger.ErrorContext(ctx, rejectErr)
+		}
+		return nil
+	}
 	if outboundHandler, isHandler := outbound.(adapter.PacketConnectionHandler); isHandler {
 		outboundHandler.NewPacketConnection(ctx, conn, metadata, onClose)
 	} else {
@@ -354,6 +404,11 @@ func (r *Router) routePacketConnection(ctx context.Context, conn N.PacketConn, m
 func (r *Router) PreMatch(metadata adapter.InboundContext, firstPacket []byte) adapter.PreMatchResult {
 	ctx := log.ContextWithNewID(r.ctx)
 	metadata.PreMatch = true
+	metadata.RuleMatchContext = ctx
+	metadata.RuleMatchError = nil
+	metadata.RuleScriptResults = make(map[string]bool)
+	metadata.RuleMatchDNSResolved = len(metadata.DestinationAddresses) > 0
+	metadata.RuleMatchNeedsHTTP = false
 	continueResult := adapter.PreMatchResult{Action: adapter.PreMatchContinue}
 	packetDestination := metadata.Destination
 	err := r.prepareMatchMetadata(ctx, &metadata)
@@ -362,8 +417,15 @@ func (r *Router) PreMatch(metadata adapter.InboundContext, firstPacket []byte) a
 	}
 	for currentRuleIndex, currentRule := range r.rules {
 		metadata.ResetRuleCache()
-		if !currentRule.Match(&metadata) {
+		matched := currentRule.Match(&metadata)
+		if metadata.RuleMatchNeedsResolution || metadata.RuleMatchError != nil || metadata.RuleMatchPendingHTTP {
+			return continueResult
+		}
+		if !matched {
 			continue
+		}
+		if action, ok := currentRule.Action().(*R.RuleActionReject); ok && action.HTTPResponse != "" {
+			return continueResult
 		}
 		ruleDescription := currentRule.String()
 		if ruleDescription != "" {
@@ -629,6 +691,12 @@ func (r *Router) matchRule(
 	selectedRule adapter.Rule, selectedRuleIndex int,
 	buffers []*buf.Buffer, packetBuffers []*N.PacketBuffer, fatalErr error,
 ) {
+	metadata.RuleMatchContext = ctx
+	metadata.RuleMatchError = nil
+	metadata.RuleScriptResults = make(map[string]bool)
+	metadata.RuleMatchDNSResolved = len(metadata.DestinationAddresses) > 0
+	metadata.RuleMatchNeedsResolution = false
+	metadata.RuleMatchNeedsHTTP = false
 	fatalErr = r.prepareMatchMetadata(ctx, metadata)
 	if fatalErr != nil {
 		return
@@ -636,8 +704,21 @@ func (r *Router) matchRule(
 
 match:
 	for currentRuleIndex, currentRule := range r.rules {
+		if fatalErr = ctx.Err(); fatalErr != nil {
+			return
+		}
 		metadata.ResetRuleCache()
-		if !currentRule.Match(metadata) {
+		matched := currentRule.Match(metadata)
+		metadata.RuleMatchNeedsHTTP = metadata.RuleMatchNeedsHTTP || metadata.RuleMatchPendingHTTP
+		if metadata.RuleMatchError != nil {
+			fatalErr = metadata.RuleMatchError
+			return
+		}
+		if !matched {
+			continue
+		}
+		if action, ok := currentRule.Action().(*R.RuleActionReject); ok && action.HTTPResponse != "" && metadata.HTTPURL == "" {
+			metadata.RuleMatchNeedsHTTP = true
 			continue
 		}
 		ruleDescription := currentRule.String()

@@ -11,11 +11,13 @@ const (
 )
 
 const (
-	RuleSetTypeInline   = "inline"
-	RuleSetTypeLocal    = "local"
-	RuleSetTypeRemote   = "remote"
-	RuleSetFormatSource = "source"
-	RuleSetFormatBinary = "binary"
+	RuleSetTypeInline         = "inline"
+	RuleSetTypeLocal          = "local"
+	RuleSetTypeRemote         = "remote"
+	RuleSetFormatSource       = "source"
+	RuleSetFormatBinary       = "binary"
+	RuleSetFormatSurgeRules   = "surge-rule-set"
+	RuleSetFormatSurgeDomains = "surge-domain-set"
 )
 
 const RuleSetTagPlaceholder = "{tag}"

@@ -72,10 +72,19 @@ func NewRuleAction(logger logger.ContextLogger, action option.RuleAction) (adapt
 			RuleActionRouteOptions: routeOptions,
 		}, nil
 	case C.RuleActionTypeReject:
+		switch action.RejectOptions.HTTPResponse {
+		case "", "reject-200", "reject-dict", "reject-tinygif":
+		default:
+			return nil, E.New("unknown HTTP reject response: ", action.RejectOptions.HTTPResponse)
+		}
+		if action.RejectOptions.HTTPResponse != "" && action.RejectOptions.Method == C.RuleActionRejectMethodDrop {
+			return nil, E.New("HTTP reject response cannot use the drop method")
+		}
 		return &RuleActionReject{
-			Method: action.RejectOptions.Method,
-			NoDrop: action.RejectOptions.NoDrop,
-			logger: logger,
+			Method:       action.RejectOptions.Method,
+			NoDrop:       action.RejectOptions.NoDrop,
+			HTTPResponse: action.RejectOptions.HTTPResponse,
+			logger:       logger,
 		}, nil
 	case C.RuleActionTypeHijackDNS:
 		return &RuleActionHijackDNS{}, nil
@@ -411,11 +420,12 @@ func IsBypassed(err error) bool {
 }
 
 type RuleActionReject struct {
-	Method      string
-	NoDrop      bool
-	logger      logger.ContextLogger
-	dropAccess  sync.Mutex
-	dropCounter []time.Time
+	Method       string
+	NoDrop       bool
+	HTTPResponse string
+	logger       logger.ContextLogger
+	dropAccess   sync.Mutex
+	dropCounter  []time.Time
 }
 
 func (r *RuleActionReject) Type() string {
@@ -423,6 +433,9 @@ func (r *RuleActionReject) Type() string {
 }
 
 func (r *RuleActionReject) String() string {
+	if r.HTTPResponse != "" {
+		return r.HTTPResponse
+	}
 	if r.Method == C.RuleActionRejectMethodDefault {
 		return "reject"
 	}

@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"maps"
 	"math"
-	"net/netip"
 	"net/url"
 	"path"
 	"regexp"
@@ -34,16 +33,19 @@ type moduleArgument struct {
 }
 
 type moduleDescription struct {
-	Name         string                  `json:"name"`
-	Description  string                  `json:"description"`
-	System       string                  `json:"system"`
-	ArgumentHelp string                  `json:"argumentHelp"`
-	Arguments    []moduleArgument        `json:"arguments"`
-	Lines        map[string][]moduleLine `json:"lines"`
-	HasScripts   bool                    `json:"hasScripts"`
-	Panels       []modulePanel           `json:"panels,omitempty"`
-	values       map[string][]any
-	hosts        moduleHostPatch
+	Name                string                  `json:"name"`
+	Description         string                  `json:"description"`
+	System              string                  `json:"system"`
+	ArgumentHelp        string                  `json:"argumentHelp"`
+	Arguments           []moduleArgument        `json:"arguments"`
+	Lines               map[string][]moduleLine `json:"lines"`
+	HasScripts          bool                    `json:"hasScripts"`
+	Panels              []modulePanel           `json:"panels,omitempty"`
+	values              map[string][]any
+	hosts               moduleHostPatch
+	forceHTTPHosts      moduleHostPatch
+	inlineRuleSets      map[string][]moduleObject
+	inlineRuleSetIssues map[string]error
 }
 
 type moduleHostPatch struct {
@@ -179,6 +181,9 @@ func moduleScript(source option.ModuleOptions, line string) (string, moduleObjec
 	if err != nil {
 		return "", nil, err
 	}
+	if name == "" && (options["type"] == "rule" || options["type"] == "dns") {
+		return "", nil, fmt.Errorf("rule and DNS scripts require an explicit name")
+	}
 	if name == "" {
 		name = path.Base(options["script-path"])
 	}
@@ -239,6 +244,7 @@ func moduleScript(source option.ModuleOptions, line string) (string, moduleObjec
 		entry["event"] = options["event-name"]
 	case "", "generic":
 		kind = "generic"
+	case "rule", "dns":
 	default:
 		return "", nil, fmt.Errorf("unsupported script type: %s", kind)
 	}
@@ -246,7 +252,7 @@ func moduleScript(source option.ModuleOptions, line string) (string, moduleObjec
 }
 
 func readModule(source option.ModuleOptions) moduleDescription {
-	result := moduleDescription{Lines: map[string][]moduleLine{}, values: map[string][]any{}}
+	result := moduleDescription{Lines: map[string][]moduleLine{}, values: map[string][]any{}, inlineRuleSets: map[string][]moduleObject{}, inlineRuleSetIssues: map[string]error{}}
 	lines := strings.Split(strings.TrimPrefix(source.Content, "\ufeff"), "\n")
 	args := map[string]string{}
 	for _, raw := range lines {
@@ -285,7 +291,7 @@ func readModule(source option.ModuleOptions) moduleDescription {
 			}
 		}
 	}
-	section := ""
+	section, inlineName := "", ""
 	var panels []modulePanel
 	conditional := 0
 	extraBudget := 8 << 20
@@ -308,7 +314,17 @@ func readModule(source option.ModuleOptions) moduleDescription {
 			continue
 		}
 		if strings.HasPrefix(line, "[") && strings.HasSuffix(line, "]") {
-			section = strings.ToLower(strings.TrimSpace(line[1 : len(line)-1]))
+			header := strings.TrimSpace(line[1 : len(line)-1])
+			section, inlineName = strings.ToLower(header), ""
+			if strings.HasPrefix(section, "ruleset ") {
+				section, inlineName = "ruleset", strings.TrimSpace(header[len("ruleset "):])
+				if _, duplicate := result.inlineRuleSets[inlineName]; duplicate {
+					result.inlineRuleSetIssues[inlineName] = fmt.Errorf("duplicate inline rule-set: %s", inlineName)
+					result.Lines["ignored"] = append(result.Lines["ignored"], moduleLine{Text: line, Issue: "duplicate inline rule-set"})
+				} else {
+					result.inlineRuleSets[inlineName] = nil
+				}
+			}
 			continue
 		}
 		exceeded := false
@@ -347,69 +363,40 @@ func readModule(source option.ModuleOptions) moduleDescription {
 				continue
 			}
 		case "rule":
-			if kind, _, _ := strings.Cut(line, ","); strings.EqualFold(strings.TrimSpace(kind), "URL-REGEX") {
-				fields, ok := moduleFields(line, true)
-				if !ok || len(fields) != 3 || moduleUnquote(fields[1]) == "" {
-					err = fmt.Errorf("invalid URL-REGEX rule")
-					break
+			var parsed option.SurgeRule
+			parsed, err = option.ParseSurgeRule(line, true)
+			if err == nil {
+				rule := parsed.Rule
+				moduleRulePolicy(rule, parsed.Policy)
+				if parsed.HasUpdateInterval {
+					rule["_surge_set_update_interval"] = parsed.UpdateInterval
 				}
-				action := map[string]string{"REJECT": "reject", "REJECT-200": "reject-200", "REJECT-DICT": "reject-dict", "REJECT-TINYGIF": "reject-tinygif"}[strings.ToUpper(fields[2])]
-				if action == "" {
-					err = fmt.Errorf("unsupported URL-REGEX policy")
-					break
-				}
-				entry := moduleObject{"pattern": moduleUnquote(fields[1]), "action": action}
-				var check httpdebug.RewriteConfig
-				encoded, _ := json.Marshal(moduleObject{"url_rewrite": []any{entry}})
-				err = json.Unmarshal(encoded, &check)
-				if err == nil {
-					group = "url rewrite"
-					result.values["url_rewrite"] = append(result.values["url_rewrite"], entry)
-				}
-				break
+				result.values["rules"] = append(result.values["rules"], rule)
 			}
-			rule, policy, ok := moduleRule(line)
-			if !ok {
-				err = fmt.Errorf("unsupported route condition or modifier")
-				break
-			}
-			switch strings.ToUpper(policy) {
-			case "REJECT":
-				rule["action"] = "reject"
-			case "REJECT-DROP":
-				rule["action"] = "reject"
-				rule["method"] = "drop"
-			case "REJECT-NO-DROP":
-				rule["action"] = "reject"
-				rule["no_drop"] = true
-			default:
-				rule["outbound"] = policy
-			}
-			result.values["rules"] = append(result.values["rules"], rule)
-		case "host":
-			host, addresses, ok := strings.Cut(line, "=")
-			host = strings.TrimSpace(host)
-			if !ok || !moduleHostname.MatchString(host) {
-				err = fmt.Errorf("expected an exact hostname and IP addresses")
-				break
-			}
-			answers := map[string][]string{}
-			for _, item := range strings.Split(addresses, ",") {
-				addr, parseErr := netip.ParseAddr(strings.TrimSpace(item))
-				if parseErr != nil {
-					err = fmt.Errorf("not an IP address")
-					break
-				}
-				record := "A"
-				if addr.Is6() {
-					record = "AAAA"
-				}
-				answers[record] = append(answers[record], fmt.Sprintf("%s. 60 IN %s %s", strings.TrimSuffix(host, "."), record, addr))
+		case "ruleset":
+			var parsed option.SurgeRule
+			parsed, err = option.ParseSurgeRule(line, false)
+			if err == nil && (option.SurgeRuleContainsSet(parsed.Rule) || parsed.HasUpdateInterval) {
+				err = fmt.Errorf("nested RULE-SET / DOMAIN-SET references are not supported in inline rule-sets")
+				result.inlineRuleSetIssues[inlineName] = err
 			}
 			if err == nil {
-				for _, record := range []string{"A", "AAAA"} {
-					result.values["dns"] = append(result.values["dns"], moduleObject{"domain": strings.TrimSuffix(host, "."), "query_type": record, "action": "predefined", "answer": answers[record]})
-				}
+				result.inlineRuleSets[inlineName] = append(result.inlineRuleSets[inlineName], parsed.Rule)
+			}
+			group = "rule set"
+		case "general":
+			key, value, found := strings.Cut(line, "=")
+			if !found || !strings.EqualFold(strings.TrimSpace(key), "force-http-engine-hosts") {
+				err = fmt.Errorf("unsupported General setting")
+				break
+			}
+			result.addForceHTTPHosts(line, strings.TrimSpace(value))
+			continue
+		case "host":
+			var entry moduleObject
+			entry, err = moduleDNSHost(line)
+			if err == nil {
+				result.values["dns_host"] = append(result.values["dns_host"], entry)
 			}
 		case "mitm":
 			key, value, ok := strings.Cut(line, "=")
@@ -459,8 +446,9 @@ func readModule(source option.ModuleOptions) moduleDescription {
 				err = json.Unmarshal(encoded, &check)
 				if err == nil {
 					display.Kind = kind
-					display.Index = len(result.values[kind])
-					result.values[kind] = append(result.values[kind], entry)
+					storageKey := moduleScriptKey(kind)
+					display.Index = len(result.values[storageKey])
+					result.values[storageKey] = append(result.values[storageKey], entry)
 				}
 			}
 		default:
@@ -566,6 +554,17 @@ func expandModuleConfig(ctx context.Context, content string, panels *[]modulePan
 	experimental := object(root, "experimental")
 	groups := map[string][]any{}
 	var hosts moduleHostPatch
+	var forceHTTPHosts moduleHostPatch
+	nativeRuleSets, usedRuleSets := map[string]bool{}, map[string]bool{}
+	if stored.Route != nil {
+		for _, set := range stored.Route.RuleSet {
+			for _, tag := range set.Tag {
+				nativeRuleSets[tag], usedRuleSets[tag] = true, true
+			}
+		}
+	}
+	resourceFormats := map[string]string{}
+	resourceIntervals := map[string]int64{}
 	types := uiConfigOutboundTypes(stored)
 	direct := ""
 	ids := map[string]bool{}
@@ -582,13 +581,25 @@ func expandModuleConfig(ctx context.Context, content string, panels *[]modulePan
 			continue
 		}
 		parsed := readModule(source)
+		if err := parsed.resolveModuleRuleSets(source, nativeRuleSets, usedRuleSets, resourceFormats, resourceIntervals); err != nil {
+			return "", fmt.Errorf("module %q: %w", source.ID, err)
+		}
+		namespaceModuleScripts(&parsed, source.ID+"/")
 		if parsed.hosts.invalid != nil {
 			return "", fmt.Errorf("module %q: %w", source.ID, parsed.hosts.invalid)
+		}
+		if parsed.forceHTTPHosts.invalid != nil {
+			return "", fmt.Errorf("module %q: %w", source.ID, parsed.forceHTTPHosts.invalid)
 		}
 		if hosts.replace == nil {
 			hosts.insert = append(hosts.insert, parsed.hosts.insert...)
 			hosts.append = append(hosts.append, parsed.hosts.append...)
 			hosts.replace = parsed.hosts.replace
+		}
+		if forceHTTPHosts.replace == nil {
+			forceHTTPHosts.insert = append(forceHTTPHosts.insert, parsed.forceHTTPHosts.insert...)
+			forceHTTPHosts.append = append(forceHTTPHosts.append, parsed.forceHTTPHosts.append...)
+			forceHTTPHosts.replace = parsed.forceHTTPHosts.replace
 		}
 		if panels != nil {
 			for _, panel := range parsed.Panels {
@@ -629,9 +640,19 @@ func expandModuleConfig(ctx context.Context, content string, panels *[]modulePan
 		switch key {
 		case "rules":
 			parent = object(root, "route")
+		case "rule_set":
+			parent = object(root, "route")
+			last = true
 		case "dns":
 			parent = object(root, "dns")
 			key = "rules"
+		case "script_rule", "script_dns":
+			parent = object(experimental, "scripts")
+			key = strings.TrimPrefix(key, "script_")
+			last = true
+		case "dns_host":
+			parent = experimental
+			key = "dns_hosts"
 		case "http", "cron", "event", "generic":
 			parent = object(experimental, "scripts")
 			last = key != "http"
@@ -654,6 +675,17 @@ func expandModuleConfig(ctx context.Context, content string, panels *[]modulePan
 			combined = append(combined, stored.Experimental.MITM.Hosts...)
 		}
 		mitm["hosts"] = append(combined, hosts.append...)
+	}
+	if forceHTTPHosts.replace != nil || len(forceHTTPHosts.insert)+len(forceHTTPHosts.append) > 0 {
+		httpRouting := object(experimental, "http_routing")
+		combined := append([]string{}, forceHTTPHosts.insert...)
+		if forceHTTPHosts.replace != nil {
+			combined = append(combined, forceHTTPHosts.replace...)
+		} else if stored.Experimental.HTTPRouting != nil {
+			combined = append(combined, stored.Experimental.HTTPRouting.ForceHTTPEngineHosts...)
+		}
+		httpRouting["force_http_engine_hosts"] = append(combined, forceHTTPHosts.append...)
+		httpRouting["enabled"] = true
 	}
 	data, err = json.Marshal(root)
 	return string(data), err

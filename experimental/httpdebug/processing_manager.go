@@ -17,6 +17,8 @@ type PreparedProcessing struct {
 	rewrite          *RewriteProgram
 	mitm             *MITMConfig
 	scripts          *ScriptProgram
+	httpRouting      *HTTPRoutingConfig
+	dnsHosts         []compiledDNSHost
 	ca               *authority
 	cron             *cronRunner
 	tasks            *scriptTaskRunner
@@ -38,10 +40,32 @@ func (p *PreparedProcessing) SetGatewayResolver(resolve func() string) {
 	}
 }
 
+type ProcessingConfig struct {
+	HTTPRouting *HTTPRoutingConfig
+	DNSHosts    []DNSHost
+}
+
 func PrepareProcessing(directory string, mitm *MITMConfig, rewrite *RewriteConfig, scripts *ScriptsConfig,
-	certificate string, signer crypto.Signer, timezone string) (*PreparedProcessing, error) {
+	certificate string, signer crypto.Signer, timezone string, extras ...ProcessingConfig) (*PreparedProcessing, error) {
 	prepared := &PreparedProcessing{directory: directory}
 	var err error
+	for _, extra := range extras {
+		if extra.HTTPRouting != nil && extra.HTTPRouting.Enabled {
+			copy := *extra.HTTPRouting
+			copy.ForceHTTPEngineHosts = slices.Clone(copy.ForceHTTPEngineHosts)
+			if err = copy.validate(); err != nil {
+				return nil, err
+			}
+			prepared.httpRouting = &copy
+		}
+		if len(extra.DNSHosts) > 0 {
+			compiled, compileErr := compileDNSHosts(extra.DNSHosts)
+			if compileErr != nil {
+				return nil, compileErr
+			}
+			prepared.dnsHosts = append(prepared.dnsHosts, compiled...)
+		}
+	}
 	if mitm != nil {
 		copy := *mitm
 		copy.Hosts, copy.Ports, copy.Packages = slices.Clone(mitm.Hosts), slices.Clone(mitm.Ports), slices.Clone(mitm.Packages)
@@ -75,7 +99,7 @@ func PrepareProcessing(directory string, mitm *MITMConfig, rewrite *RewriteConfi
 			return nil, err
 		}
 	}
-	if prepared.rewrite == nil && prepared.mitm == nil && prepared.scripts == nil {
+	if prepared.rewrite == nil && prepared.mitm == nil && prepared.scripts == nil && prepared.httpRouting == nil && len(prepared.dnsHosts) == 0 {
 		return nil, nil
 	}
 	managerMu.Lock()
@@ -99,6 +123,7 @@ func newProcessingEngine(prepared *PreparedProcessing) *Engine {
 	engine := newEngine(Config{}, store)
 	engine.recording.Store(nil)
 	engine.rewrite, engine.mitm, engine.scripts, engine.ca = prepared.rewrite, prepared.mitm, prepared.scripts, prepared.ca
+	engine.httpRouting, engine.dnsHosts = prepared.httpRouting, prepared.dnsHosts
 	return engine
 }
 
@@ -130,6 +155,16 @@ func ActivateProcessing(prepared *PreparedProcessing, dial RewriteDialFunc, root
 			}
 		}
 		if prepared.scripts != nil {
+			for _, script := range prepared.scripts.rule {
+				if script.source != nil {
+					sources = append(sources, script.source)
+				}
+			}
+			for _, script := range prepared.scripts.dns {
+				if script.source != nil {
+					sources = append(sources, script.source)
+				}
+			}
 			for _, script := range prepared.scripts.stream {
 				if script.source != nil {
 					sources = append(sources, script.source)

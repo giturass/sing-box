@@ -422,10 +422,12 @@ func (r *DefaultDNSRule) WithAddressLimit() bool {
 }
 
 func (r *DefaultDNSRule) Match(metadata *adapter.InboundContext) bool {
+	defer applyDNSRuleScope(metadata)()
 	return r.matchForMatch(metadata)
 }
 
 func (r *DefaultDNSRule) LegacyPreMatch(metadata *adapter.InboundContext) bool {
+	defer applyDNSRuleScope(metadata)()
 	if r.matchResponse {
 		return false
 	}
@@ -472,6 +474,7 @@ func (r *DefaultDNSRule) matchForMatch(metadata *adapter.InboundContext) bool {
 
 func (r *DefaultDNSRule) MatchAddressLimit(metadata *adapter.InboundContext, response *dns.Msg) bool {
 	matchMetadata := *metadata
+	defer applyDNSRuleScope(&matchMetadata)()
 	matchMetadata.ResetRuleCache()
 	matchMetadata.DNSResponse = response
 	matchMetadata.DestinationAddressMatchFromResponse = true
@@ -557,7 +560,13 @@ func (r *LogicalDNSRule) WithAddressLimit() bool {
 	return false
 }
 
+func (r *LogicalDNSRule) Match(metadata *adapter.InboundContext) bool {
+	defer applyDNSRuleScope(metadata)()
+	return r.abstractLogicalRule.Match(metadata)
+}
+
 func (r *LogicalDNSRule) LegacyPreMatch(metadata *adapter.InboundContext) bool {
+	defer applyDNSRuleScope(metadata)()
 	metadata.IgnoreDestinationIPCIDRMatch = true
 	defer func() { metadata.IgnoreDestinationIPCIDRMatch = false }()
 	return r.abstractLogicalRule.Match(metadata)
@@ -565,8 +574,23 @@ func (r *LogicalDNSRule) LegacyPreMatch(metadata *adapter.InboundContext) bool {
 
 func (r *LogicalDNSRule) MatchAddressLimit(metadata *adapter.InboundContext, response *dns.Msg) bool {
 	matchMetadata := *metadata
+	defer applyDNSRuleScope(&matchMetadata)()
 	matchMetadata.ResetRuleCache()
 	matchMetadata.DNSResponse = response
 	matchMetadata.DestinationAddressMatchFromResponse = true
 	return r.abstractLogicalRule.Match(&matchMetadata)
+}
+
+// DNS rules may share mixed route sets, but do not observe an HTTP request or
+// evaluate a route SCRIPT. Restore the caller's observations after matching;
+// QueryType alone cannot identify a legacy lookup as a DNS evaluation.
+func applyDNSRuleScope(metadata *adapter.InboundContext) func() {
+	flow := metadata.DNSFlow
+	url, userAgent, host, serverName := metadata.HTTPURL, metadata.HTTPUserAgent, metadata.HTTPHost, metadata.HTTPServerName
+	metadata.DNSFlow = true
+	metadata.HTTPURL, metadata.HTTPUserAgent, metadata.HTTPHost, metadata.HTTPServerName = "", "", "", ""
+	return func() {
+		metadata.DNSFlow = flow
+		metadata.HTTPURL, metadata.HTTPUserAgent, metadata.HTTPHost, metadata.HTTPServerName = url, userAgent, host, serverName
+	}
 }

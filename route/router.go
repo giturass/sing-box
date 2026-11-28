@@ -79,6 +79,9 @@ func NewRouter(ctx context.Context, logFactory log.Factory, options option.Route
 }
 
 func (r *Router) Initialize(rules []option.Rule, ruleSets []option.RuleSet) error {
+	if err := R.ValidateSurgeRuleSetResourceFormats(r.ctx, ruleSets); err != nil {
+		return err
+	}
 	for i, options := range rules {
 		err := R.ValidateNoNestedRuleActions(options)
 		if err != nil {

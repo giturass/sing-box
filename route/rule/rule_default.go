@@ -59,8 +59,10 @@ func NewDefaultRule(ctx context.Context, logger log.ContextLogger, options optio
 	}
 	rule := &DefaultRule{
 		abstractDefaultRule{
-			invert: options.Invert,
-			action: action,
+			invert:               options.Invert,
+			action:               action,
+			httpExtendedMatching: options.HTTPExtendedMatching,
+			surgeNoResolve:       options.SurgeNoResolve,
 		},
 	}
 	router := service.FromContext[adapter.Router](ctx)
@@ -95,6 +97,14 @@ func NewDefaultRule(ctx context.Context, logger log.ContextLogger, options optio
 		rule.items = append(rule.items, item)
 		rule.allItems = append(rule.allItems, item)
 	}
+	if len(options.SurgeProtocol) > 0 {
+		item, err := NewSurgeProtocolItem(options.SurgeProtocol)
+		if err != nil {
+			return nil, err
+		}
+		rule.items = append(rule.items, item)
+		rule.allItems = append(rule.allItems, item)
+	}
 	if len(options.Client) > 0 {
 		item := NewClientItem(options.Client)
 		rule.items = append(rule.items, item)
@@ -121,6 +131,30 @@ func NewDefaultRule(ctx context.Context, logger log.ContextLogger, options optio
 		rule.destinationAddressItems = append(rule.destinationAddressItems, item)
 		rule.allItems = append(rule.allItems, item)
 	}
+	if len(options.HTTPURLRegex) > 0 {
+		item, err := NewHTTPURLRegexItem(options.HTTPURLRegex)
+		if err != nil {
+			return nil, err
+		}
+		rule.items = append(rule.items, item)
+		rule.allItems = append(rule.allItems, item)
+	}
+	if len(options.HTTPUserAgent) > 0 {
+		item, err := NewHTTPUserAgentItem(options.HTTPUserAgent)
+		if err != nil {
+			return nil, err
+		}
+		rule.items = append(rule.items, item)
+		rule.allItems = append(rule.allItems, item)
+	}
+	if options.Script != "" {
+		item, err := NewScriptItem(ctx, options.Script, options.ScriptRequiresResolve)
+		if err != nil {
+			return nil, err
+		}
+		rule.items = append(rule.items, item)
+		rule.allItems = append(rule.allItems, item)
+	}
 	if len(options.Geosite) > 0 {
 		return nil, E.New("geosite database is deprecated in sing-box 1.8.0 and removed in sing-box 1.12.0")
 	}
@@ -144,7 +178,13 @@ func NewDefaultRule(ctx context.Context, logger log.ContextLogger, options optio
 		rule.allItems = append(rule.allItems, item)
 	}
 	if len(options.IPCIDR) > 0 {
-		item, err := NewIPCIDRItem(false, options.IPCIDR)
+		var item RuleItem
+		var err error
+		if options.SurgeIPCIDR {
+			item, err = NewSurgeIPCIDRItem(ctx, options.IPCIDR, options.SurgeNoResolve)
+		} else {
+			item, err = NewIPCIDRItem(false, options.IPCIDR)
+		}
 		if err != nil {
 			return nil, E.Cause(err, "ipcidr")
 		}

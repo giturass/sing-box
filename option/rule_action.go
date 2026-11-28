@@ -154,6 +154,9 @@ func (r *DNSRuleAction) UnmarshalJSONContext(ctx context.Context, data []byte) e
 	if err != nil {
 		return err
 	}
+	if r.Action == C.RuleActionTypeReject && r.RejectOptions.HTTPResponse != "" {
+		return E.New("HTTP reject responses are not DNS rule actions")
+	}
 	return nil
 }
 
@@ -233,8 +236,9 @@ func (r *DNSRouteOptionsActionOptions) UnmarshalJSON(data []byte) error {
 }
 
 type _RejectActionOptions struct {
-	Method string `json:"method,omitempty" enum:"default,drop,reply"`
-	NoDrop bool   `json:"no_drop,omitempty"`
+	Method       string `json:"method,omitempty" enum:"default,drop,reply"`
+	NoDrop       bool   `json:"no_drop,omitempty"`
+	HTTPResponse string `json:"http_response,omitempty" enum:"reject-200,reject-dict,reject-tinygif"`
 }
 
 type RejectActionOptions _RejectActionOptions
@@ -262,6 +266,14 @@ func (r *RejectActionOptions) UnmarshalJSON(bytes []byte) error {
 	}
 	if r.Method == C.RuleActionRejectMethodDrop && r.NoDrop {
 		return E.New("no_drop is not available in current context")
+	}
+	switch r.HTTPResponse {
+	case "", "reject-200", "reject-dict", "reject-tinygif":
+	default:
+		return E.New("unknown HTTP reject response: " + r.HTTPResponse)
+	}
+	if r.HTTPResponse != "" && r.Method == C.RuleActionRejectMethodDrop {
+		return E.New("HTTP reject response cannot use the drop method")
 	}
 	return nil
 }
@@ -331,12 +343,20 @@ func rejectProperties(variant *schema.Node) error {
 	return nil
 }
 
+func httpRejectProperties(variant *schema.Node) error {
+	if err := rejectProperties(variant); err != nil {
+		return err
+	}
+	variant.Properties.Put("http_response", schema.StringEnum("reject-200", "reject-dict", "reject-tinygif"))
+	return nil
+}
+
 func routeActionUnion(builder schema.Builder) (*schema.Node, error) {
 	return actionUnion(builder, []actionVariant{
 		{action: C.RuleActionTypeRoute, actionOptional: true, structType: reflect.TypeFor[RouteActionOptions]()},
 		{action: C.RuleActionTypeRouteOptions, structType: reflect.TypeFor[RawRouteOptionsActionOptions]()},
 		{action: C.RuleActionTypeBypass, structType: reflect.TypeFor[RouteActionOptions]()},
-		{action: C.RuleActionTypeReject, build: rejectProperties},
+		{action: C.RuleActionTypeReject, build: httpRejectProperties},
 		{action: C.RuleActionTypeHijackDNS},
 		{action: C.RuleActionTypeSniff, structType: reflect.TypeFor[RouteActionSniff]()},
 		{action: C.RuleActionTypeResolve, structType: reflect.TypeFor[RouteActionResolve]()},

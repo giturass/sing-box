@@ -10,6 +10,6 @@ import (
 
 const http3Included = false
 
-func (e *Engine) HandleQUIC(context.Context, net.PacketConn, Metadata, PacketDialFunc, RewriteDialFunc, *x509.CertPool, func(error)) bool {
+func (e *Engine) HandleQUIC(context.Context, net.PacketConn, Metadata, PacketDialFunc, RewriteDialFunc, *x509.CertPool, func(error), ...RequestRouteFunc) bool {
 	return false
 }

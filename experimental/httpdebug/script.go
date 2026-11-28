@@ -24,6 +24,8 @@ var cronScriptsRunning atomic.Int64
 var eventScriptsRunning atomic.Int64
 var genericScriptsRunning atomic.Int64
 var streamScriptsRunning atomic.Int64
+var ruleScriptsRunning atomic.Int64
+var dnsScriptsRunning atomic.Int64
 var scriptFinished = errors.New("script called $done")
 var errScriptAbort = errors.New("HTTP processing aborted by script")
 
@@ -126,6 +128,10 @@ func executeScript(parent context.Context, program *goja.Program, label, kind st
 		running = &genericScriptsRunning
 	case "stream":
 		running = &streamScriptsRunning
+	case "rule":
+		running = &ruleScriptsRunning
+	case "dns":
+		running = &dnsScriptsRunning
 	}
 	if err := ctx.Err(); err != nil {
 		return fmt.Errorf("%s: %w", label, err)

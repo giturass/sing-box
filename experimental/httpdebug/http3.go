@@ -29,7 +29,7 @@ const http3Included = true
 // HandleQUIC takes ownership only after a read-only ClientHello inspection.
 // Routing has already restored every sniffed datagram to conn and registered
 // its original connection tracker and interruption handler.
-func (e *Engine) HandleQUIC(ctx context.Context, conn net.PacketConn, metadata Metadata, dial PacketDialFunc, mapped RewriteDialFunc, roots *x509.CertPool, onClose func(error)) bool {
+func (e *Engine) HandleQUIC(ctx context.Context, conn net.PacketConn, metadata Metadata, dial PacketDialFunc, mapped RewriteDialFunc, roots *x509.CertPool, onClose func(error), routes ...RequestRouteFunc) bool {
 	metadata.Protocol = "tls"
 	if !e.H3Enabled() || e.ca == nil || !e.mitm.matches(metadata) {
 		return false
@@ -47,7 +47,7 @@ func (e *Engine) HandleQUIC(ctx context.Context, conn net.PacketConn, metadata M
 	go func() {
 		defer e.wg.Done()
 		stopClose := context.AfterFunc(ctx, func() { _ = socket.Close() })
-		err := e.serveQUIC(ctx, socket, metadata, dial, mapped, roots)
+		err := e.serveQUIC(ctx, socket, metadata, dial, mapped, roots, routes...)
 		stopClose()
 		_ = socket.Close()
 		e.mu.Lock()
@@ -79,13 +79,13 @@ func debugHTTP3HeaderLimit() int {
 	return int(min(uint64(^uint(0)>>1)-4096, uint64(1<<62-1)))
 }
 
-func (e *Engine) serveQUIC(ctx context.Context, socket *http3Socket, metadata Metadata, dial PacketDialFunc, mapped RewriteDialFunc, roots *x509.CertPool) error {
+func (e *Engine) serveQUIC(ctx context.Context, socket *http3Socket, metadata Metadata, dial PacketDialFunc, mapped RewriteDialFunc, roots *x509.CertPool, routes ...RequestRouteFunc) error {
 	e.tlsOpened.Add(1)
 	metadata.CaptureSource, metadata.TLSAdapter = "MITM", "Go crypto/tls + quic-go"
 	upstream := newHTTP3Upstream(ctx, dial, metadata.Host, roots, e.mitm.SkipServerCertVerify)
 	defer upstream.Close()
 	var upstreamState *tls.ConnectionState
-	if e.httpProgram(metadata) == nil {
+	if e.httpProgram(metadata) == nil && (e.httpRouting == nil || !e.httpRouting.Enabled) {
 		// Pure interception verifies the real origin before responding to the
 		// client's TLS handshake. Rules may instead answer an offline Mock.
 		conn, err := upstream.prime(ctx)
@@ -168,7 +168,12 @@ func (e *Engine) serveQUIC(ctx context.Context, socket *http3Socket, metadata Me
 		defer mappedTransport.CloseIdleConnections()
 	}
 	target := &url.URL{Scheme: "https", Host: net.JoinHostPort(metadata.Host, strconv.Itoa(int(metadata.Port)))}
-	process := e.handler(metadata, target, upstream, mappedTransport)
+	var requestPool *requestTransportPool
+	if e.httpRouting != nil && e.httpRouting.Enabled && len(routes) > 0 && routes[0] != nil {
+		requestPool = newRequestTransportPool(ctx, routes[0], roots, e.mitm, true)
+		defer requestPool.Close()
+	}
+	process := e.handler(metadata, target, upstream, mappedTransport, requestPool)
 	var received atomic.Bool
 	server := &http3.Server{
 		Handler: http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {

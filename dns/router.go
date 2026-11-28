@@ -14,6 +14,7 @@ import (
 	"github.com/sagernet/sing-box/common/taskmonitor"
 	C "github.com/sagernet/sing-box/constant"
 	"github.com/sagernet/sing-box/experimental/deprecated"
+	"github.com/sagernet/sing-box/experimental/httpdebug"
 	"github.com/sagernet/sing-box/log"
 	"github.com/sagernet/sing-box/option"
 	R "github.com/sagernet/sing-box/route/rule"
@@ -54,6 +55,7 @@ type Router struct {
 	rulesAccess           sync.RWMutex
 	started               bool
 	closing               bool
+	bBoxScriptDNS         *bBoxScriptDNSState
 }
 
 func NewRouter(ctx context.Context, logFactory log.Factory, options option.DNSOptions) (*Router, error) {
@@ -66,6 +68,7 @@ func NewRouter(ctx context.Context, logFactory log.Factory, options option.DNSOp
 		rawRules:              make([]option.DNSRule, 0, len(options.Rules)),
 		rules:                 make([]adapter.DNSRule, 0, len(options.Rules)),
 		defaultDomainStrategy: C.DomainStrategy(options.Strategy),
+		bBoxScriptDNS:         newBBoxScriptDNSState(ctx),
 	}
 	if options.DNSClientOptions.IndependentCache {
 		deprecated.Report(ctx, deprecated.OptionIndependentDNSCache)
@@ -141,12 +144,16 @@ func (r *Router) Start(stage adapter.StartStage, scope *adapter.Scope) error {
 	monitor := taskmonitor.New(r.logger, C.StartTimeout)
 	switch stage {
 	case adapter.StartStateStart:
+		bBoxScriptDNS := r.bBoxScriptDNSState()
+		stopScriptDNS := context.AfterFunc(scope.Context(), bBoxScriptDNS.cancel)
 		scope.Add(func() error {
 			r.rulesAccess.Lock()
 			r.closing = true
 			runtimeRules := r.rules
 			r.rules = nil
 			r.rulesAccess.Unlock()
+			stopScriptDNS()
+			_ = bBoxScriptDNS.close()
 			closeRules(runtimeRules)
 			return nil
 		})
@@ -965,6 +972,7 @@ func (r *Router) resolveLookupStrategy(options adapter.DNSQueryOptions) C.Domain
 
 func withLookupQueryMetadata(ctx context.Context, qType uint16) context.Context {
 	ctx, metadata := adapter.ExtendContext(ctx)
+	prepareBBoxDNSRuleMetadata(ctx, metadata)
 	metadata.QueryType = qType
 	metadata.QueryClientSubnet = netip.Prefix{}
 	metadata.QueryDNSSEC = false
@@ -1103,6 +1111,7 @@ func (r *Router) prepareExchange(ctx context.Context, message *mDNS.Msg) (*dnsEx
 	r.rulesAccess.RUnlock()
 	r.logger.DebugContext(ctx, "exchange ", FormatQuestion(message.Question[0].String()))
 	ctx, metadata := adapter.ExtendContext(ctx)
+	prepareBBoxDNSRuleMetadata(ctx, metadata)
 	metadata.Destination = M.Socksaddr{}
 	metadata.QueryType = message.Question[0].Qtype
 	metadata.DNSResponse = nil
@@ -1272,6 +1281,15 @@ func (r *Router) Exchange(ctx context.Context, message *mDNS.Msg, options adapte
 		return earlyResponse, err
 	}
 	ctx = exchangeCtx.ctx
+	if response, handled, scriptErr := r.exchangeBBoxDNSHost(ctx, message, options); handled {
+		if scriptErr != nil {
+			return nil, scriptErr
+		}
+		if !options.DisableReverseMapping {
+			r.recordReverseMapping(message, response, nil)
+		}
+		return response, nil
+	}
 	var (
 		response  *mDNS.Msg
 		transport adapter.DNSTransport
@@ -1301,6 +1319,21 @@ func (r *Router) ExchangeAsync(ctx context.Context, message *mDNS.Msg, options a
 		return
 	}
 	ctx = exchangeCtx.ctx
+	if r.hasBBoxDNSHost(ctx, message.Question[0].Name) {
+		go func() {
+			response, handled, scriptErr := r.exchangeBBoxDNSHost(ctx, message, options)
+			if handled {
+				r.finishExchangeAsync(message, options, nil, response, scriptErr, callback)
+				return
+			}
+			r.exchangePreparedAsync(ctx, exchangeCtx, message, options, callback)
+		}()
+		return
+	}
+	r.exchangePreparedAsync(ctx, exchangeCtx, message, options, callback)
+}
+
+func (r *Router) exchangePreparedAsync(ctx context.Context, exchangeCtx *dnsExchangeContext, message *mDNS.Msg, options adapter.DNSQueryOptions, callback func(response *mDNS.Msg, err error)) {
 	if options.Transport != nil {
 		transport := options.Transport
 		r.client.ExchangeAsync(ctx, transport, message, r.finalizeExchangeOptions(options), nil, func(response *mDNS.Msg, exchangeErr error) {
@@ -1365,11 +1398,16 @@ func (r *Router) Lookup(ctx context.Context, domain string, options adapter.DNSQ
 	}
 	r.logger.DebugContext(ctx, "lookup domain ", domain)
 	ctx, metadata := adapter.ExtendContext(ctx)
+	prepareBBoxDNSRuleMetadata(ctx, metadata)
 	metadata.Destination = M.Socksaddr{}
 	metadata.Domain = FqdnToDomain(domain)
 	metadata.DNSResponse = nil
 	metadata.NamedDNSResponses = nil
 	metadata.DestinationAddressMatchFromResponse = false
+	if addresses, handled, scriptErr := r.lookupBBoxDNSHost(ctx, domain, options); handled {
+		responseAddrs, err = addresses, scriptErr
+		goto response
+	}
 	if options.Transport != nil {
 		transport := options.Transport
 		if options.Strategy == C.DomainStrategyAsIS {
@@ -1455,6 +1493,7 @@ func addressLimitResponseCheck(rule adapter.DNSRule, metadata *adapter.InboundCo
 }
 
 func (r *Router) ClearCache() {
+	httpdebug.ClearScriptDNSCache()
 	r.client.ClearCache()
 	if r.platformInterface != nil {
 		r.platformInterface.ClearDNSCache()

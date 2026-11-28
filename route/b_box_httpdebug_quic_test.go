@@ -174,6 +174,9 @@ func prepareCaptureQUIC(t *testing.T, directory string, pem string, signer *ecds
 }
 
 func testBboxHTTPDebugQUIC(t *testing.T, directory string) {
+	t.Run("HTTP3-native-rules-final-reject", func(t *testing.T) {
+		testBboxHTTPRequestQUICNativeRules(t, directory)
+	})
 	t.Run("HTTP3-route-and-connection", func(t *testing.T) {
 		testBboxHTTPDebugQUICRoute(t, directory, false)
 	})

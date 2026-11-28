@@ -38,7 +38,9 @@ func NewDefaultHeadlessRule(ctx context.Context, options option.DefaultHeadlessR
 	networkManager := service.FromContext[adapter.NetworkManager](ctx)
 	rule := &DefaultHeadlessRule{
 		abstractDefaultRule{
-			invert: options.Invert,
+			invert:               options.Invert,
+			httpExtendedMatching: options.HTTPExtendedMatching,
+			surgeNoResolve:       options.SurgeNoResolve,
 		},
 	}
 	if len(options.QueryType) > 0 {
@@ -48,6 +50,19 @@ func NewDefaultHeadlessRule(ctx context.Context, options option.DefaultHeadlessR
 	}
 	if len(options.Network) > 0 {
 		item := NewNetworkItem(options.Network)
+		rule.items = append(rule.items, item)
+		rule.allItems = append(rule.allItems, item)
+	}
+	if len(options.Protocol) > 0 {
+		item := NewProtocolItem(options.Protocol)
+		rule.items = append(rule.items, item)
+		rule.allItems = append(rule.allItems, item)
+	}
+	if len(options.SurgeProtocol) > 0 {
+		item, err := NewSurgeProtocolItem(options.SurgeProtocol)
+		if err != nil {
+			return nil, err
+		}
 		rule.items = append(rule.items, item)
 		rule.allItems = append(rule.allItems, item)
 	}
@@ -76,6 +91,30 @@ func NewDefaultHeadlessRule(ctx context.Context, options option.DefaultHeadlessR
 		rule.destinationAddressItems = append(rule.destinationAddressItems, item)
 		rule.allItems = append(rule.allItems, item)
 	}
+	if len(options.HTTPURLRegex) > 0 {
+		item, err := NewHTTPURLRegexItem(options.HTTPURLRegex)
+		if err != nil {
+			return nil, err
+		}
+		rule.items = append(rule.items, item)
+		rule.allItems = append(rule.allItems, item)
+	}
+	if len(options.HTTPUserAgent) > 0 {
+		item, err := NewHTTPUserAgentItem(options.HTTPUserAgent)
+		if err != nil {
+			return nil, err
+		}
+		rule.items = append(rule.items, item)
+		rule.allItems = append(rule.allItems, item)
+	}
+	if options.Script != "" {
+		item, err := NewScriptItem(ctx, options.Script, options.ScriptRequiresResolve)
+		if err != nil {
+			return nil, err
+		}
+		rule.items = append(rule.items, item)
+		rule.allItems = append(rule.allItems, item)
+	}
 	if len(options.SourceIPCIDR) > 0 {
 		item, err := NewIPCIDRItem(true, options.SourceIPCIDR)
 		if err != nil {
@@ -89,7 +128,13 @@ func NewDefaultHeadlessRule(ctx context.Context, options option.DefaultHeadlessR
 		rule.allItems = append(rule.allItems, item)
 	}
 	if len(options.IPCIDR) > 0 {
-		item, err := NewIPCIDRItem(false, options.IPCIDR)
+		var item RuleItem
+		var err error
+		if options.SurgeIPCIDR {
+			item, err = NewSurgeIPCIDRItem(ctx, options.IPCIDR, options.SurgeNoResolve)
+		} else {
+			item, err = NewIPCIDRItem(false, options.IPCIDR)
+		}
 		if err != nil {
 			return nil, E.Cause(err, "ipcidr")
 		}

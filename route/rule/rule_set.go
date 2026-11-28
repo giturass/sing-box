@@ -2,7 +2,9 @@ package rule
 
 import (
 	"context"
+	"path/filepath"
 	"reflect"
+	"strings"
 
 	"github.com/sagernet/sing-box/adapter"
 	C "github.com/sagernet/sing-box/constant"
@@ -11,6 +13,7 @@ import (
 	E "github.com/sagernet/sing/common/exceptions"
 	"github.com/sagernet/sing/common/logger"
 	"github.com/sagernet/sing/service"
+	"github.com/sagernet/sing/service/filemanager"
 
 	"go4.org/netipx"
 )
@@ -26,6 +29,35 @@ func NewRuleSet(ctx context.Context, logger logger.ContextLogger, tag string, op
 	}
 }
 
+// Surge treats a resource's text format as part of its declaration, rather
+// than guessing it from file extensions or interpreting it both ways.
+func ValidateSurgeRuleSetResourceFormats(ctx context.Context, ruleSets []option.RuleSet) error {
+	formats := map[string]string{}
+	for _, options := range ruleSets {
+		if options.Format != C.RuleSetFormatSurgeRules && options.Format != C.RuleSetFormatSurgeDomains {
+			continue
+		}
+		for _, tag := range options.Tag {
+			var identity string
+			switch options.Type {
+			case C.RuleSetTypeRemote:
+				identity = "url:" + strings.ReplaceAll(options.RemoteOptions.URL, C.RuleSetTagPlaceholder, tag)
+			case C.RuleSetTypeLocal:
+				path := filemanager.BasePath(ctx, strings.ReplaceAll(options.LocalOptions.Path, C.RuleSetTagPlaceholder, tag))
+				path, _ = filepath.Abs(path)
+				identity = "path:" + path
+			default:
+				continue
+			}
+			if previous := formats[identity]; previous != "" && previous != options.Format {
+				return E.New("one Surge rule-set resource cannot use both RULE-SET and DOMAIN-SET: ", identity)
+			}
+			formats[identity] = options.Format
+		}
+	}
+	return nil
+}
+
 func extractIPSetFromRule(rawRule adapter.HeadlessRule) []*netipx.IPSet {
 	switch rule := rawRule.(type) {
 	case *DefaultHeadlessRule:
@@ -33,6 +65,8 @@ func extractIPSetFromRule(rawRule adapter.HeadlessRule) []*netipx.IPSet {
 			switch item := rawItem.(type) {
 			case *IPCIDRItem:
 				return []*netipx.IPSet{item.ipSet.IPSet()}
+			case *SurgeIPCIDRItem:
+				return []*netipx.IPSet{item.inner.ipSet.IPSet()}
 			default:
 				return nil
 			}
@@ -76,11 +110,17 @@ func isDNSQueryTypeHeadlessRule(rule option.DefaultHeadlessRule) bool {
 	return len(rule.QueryType) > 0
 }
 
+func isHTTPHeadlessRule(rule option.DefaultHeadlessRule) bool {
+	return len(rule.HTTPURLRegex) > 0 || len(rule.HTTPUserAgent) > 0 || rule.Script != "" || rule.HTTPExtendedMatching || common.Any(rule.SurgeProtocol, func(value string) bool { return value == "HTTP" || value == "HTTPS" })
+}
+
 func isNonIPCIDRHeadlessRule(rule option.DefaultHeadlessRule) bool {
 	ipOnly := option.DefaultHeadlessRule{
-		IPCIDR: rule.IPCIDR,
-		IPSet:  rule.IPSet,
-		Invert: rule.Invert,
+		IPCIDR:         rule.IPCIDR,
+		IPSet:          rule.IPSet,
+		Invert:         rule.Invert,
+		SurgeIPCIDR:    rule.SurgeIPCIDR,
+		SurgeNoResolve: rule.SurgeNoResolve,
 	}
 	return !reflect.DeepEqual(rule, ipOnly)
 }
@@ -91,6 +131,7 @@ func buildRuleSetMetadata(headlessRules []option.HeadlessRule) adapter.RuleSetMe
 		ContainsWIFIRule:         HasHeadlessRule(headlessRules, isWIFIHeadlessRule),
 		ContainsIPCIDRRule:       HasHeadlessRule(headlessRules, isIPCIDRHeadlessRule),
 		ContainsDNSQueryTypeRule: HasHeadlessRule(headlessRules, isDNSQueryTypeHeadlessRule),
+		ContainsHTTPRule:         HasHeadlessRule(headlessRules, isHTTPHeadlessRule),
 		ContainsNonIPCIDRRule:    HasHeadlessRule(headlessRules, isNonIPCIDRHeadlessRule),
 	}
 }

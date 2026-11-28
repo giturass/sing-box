@@ -89,35 +89,36 @@ func validHost(host string) bool {
 type Metadata struct {
 	// ConnectionID identifies the original routed client connection, when tracked.
 	// Each exchange still has its own ID, including multiplexed HTTP/2 requests.
-	ConnectionID        string          `json:"connectionId,omitempty"`
-	ProcessingReason    string          `json:"processingReason,omitempty"`
-	Host                string          `json:"host"`
-	Port                uint16          `json:"port"`
-	Protocol            string          `json:"protocol"`
-	Source              string          `json:"source"`
-	Destination         string          `json:"destination"`
-	OriginalDestination string          `json:"originalDestination,omitempty"`
-	Inbound             string          `json:"inbound"`
-	Outbound            string          `json:"outbound"`
-	Rule                string          `json:"rule"`
-	UID                 int32           `json:"uid"`
-	Packages            []string        `json:"packages"`
-	CaptureSource       string          `json:"captureSource,omitempty"`
-	PID                 uint32          `json:"pid,omitempty"`
-	CaptureID           string          `json:"captureId,omitempty"`
-	TLSAdapter          string          `json:"tlsAdapter,omitempty"`
-	Socket              *SocketMetadata `json:"socket,omitempty"`
-	RawTCP              bool            `json:"rawTCP,omitempty"`
-	StreamID            string          `json:"streamId,omitempty"`
-	ParentID            string          `json:"parentId,omitempty"`
-	StreamURL           string          `json:"streamUrl,omitempty"`
-	Direction           string          `json:"direction,omitempty"`
-	Opcode              int             `json:"opcode,omitempty"`
-	Injected            bool            `json:"injected,omitempty"`
-	Dropped             bool            `json:"dropped,omitempty"`
-	TLS                 *TLSMetadata    `json:"tls,omitempty"`
-	sniffedSNI          bool            // only an inspected ClientHello can set this
-	messageID           string          // one stream-script invocation, shared across its rules
+	ConnectionID        string                `json:"connectionId,omitempty"`
+	ProcessingReason    string                `json:"processingReason,omitempty"`
+	Host                string                `json:"host"`
+	Port                uint16                `json:"port"`
+	Protocol            string                `json:"protocol"`
+	Source              string                `json:"source"`
+	Destination         string                `json:"destination"`
+	OriginalDestination string                `json:"originalDestination,omitempty"`
+	Inbound             string                `json:"inbound"`
+	Outbound            string                `json:"outbound"`
+	Rule                string                `json:"rule"`
+	RequestRoute        *RequestRouteMetadata `json:"requestRoute,omitempty"`
+	UID                 int32                 `json:"uid"`
+	Packages            []string              `json:"packages"`
+	CaptureSource       string                `json:"captureSource,omitempty"`
+	PID                 uint32                `json:"pid,omitempty"`
+	CaptureID           string                `json:"captureId,omitempty"`
+	TLSAdapter          string                `json:"tlsAdapter,omitempty"`
+	Socket              *SocketMetadata       `json:"socket,omitempty"`
+	RawTCP              bool                  `json:"rawTCP,omitempty"`
+	StreamID            string                `json:"streamId,omitempty"`
+	ParentID            string                `json:"parentId,omitempty"`
+	StreamURL           string                `json:"streamUrl,omitempty"`
+	Direction           string                `json:"direction,omitempty"`
+	Opcode              int                   `json:"opcode,omitempty"`
+	Injected            bool                  `json:"injected,omitempty"`
+	Dropped             bool                  `json:"dropped,omitempty"`
+	TLS                 *TLSMetadata          `json:"tls,omitempty"`
+	sniffedSNI          bool                  // only an inspected ClientHello can set this
+	messageID           string                // one stream-script invocation, shared across its rules
 }
 
 // Versions and ALPN are the negotiated values on each side, not estimates.

@@ -183,7 +183,7 @@ func TestUISurgeModuleCommentedProfile(t *testing.T) {
 func TestUISurgeModuleDiagnosticsAndSources(t *testing.T) {
 	source := option.ModuleOptions{URL: "https://example.test/modules/one.sgmodule", Content: "[Rule]\nOR,((DOMAIN,ok.test),(UNSUPPORTED,other)),REJECT\nIP-CIDR,192.0.2.0/24,REJECT,no-resolve\n[Script]\njob = type=generic,script-path=job.js\nother = type=generic,script-path=file:///private.js\n[Host]\na.test = 192.0.2.1"}
 	parsed := readModule(source)
-	if len(parsed.Lines["ignored"]) != 2 || len(parsed.values["rules"]) != 1 || !parsed.HasScripts || parsed.values["generic"][0].(moduleObject)["script_path"] != "https://example.test/modules/job.js" || len(parsed.values["dns"]) == 0 {
+	if len(parsed.Lines["ignored"]) != 2 || len(parsed.values["rules"]) != 1 || !parsed.HasScripts || parsed.values["generic"][0].(moduleObject)["script_path"] != "https://example.test/modules/job.js" || len(parsed.values["dns_host"]) == 0 {
 		t.Fatal(parsed)
 	}
 	source.URL = ""
@@ -193,8 +193,8 @@ func TestUISurgeModuleDiagnosticsAndSources(t *testing.T) {
 }
 
 func TestUISurgeModuleHTTPAndRoutePolicies(t *testing.T) {
-	parsed := readModule(option.ModuleOptions{Content: "[Rule]\nURL-REGEX,^https://example.test/,REJECT-DICT\nURL-REGEX,other,DIRECT\nNETWORK-TYPE,wifi,REJECT-NO-DROP\nRULE-SET,https://example.test/rules,REJECT\nRULE-SET,local-rules,REJECT\nDOMAIN,example.test,\"\""})
-	if len(parsed.values["url_rewrite"]) != 1 || len(parsed.values["rules"]) != 2 || len(parsed.Lines["ignored"]) != 3 || parsed.values["rules"][0].(moduleObject)["no_drop"] != true {
+	parsed := readModule(option.ModuleOptions{Content: "[Rule]\nURL-REGEX,^https://example.test/,REJECT-DICT\nURL-REGEX,other,DIRECT\nUSER-AGENT,Browser/*,proxy\nNETWORK-TYPE,wifi,REJECT-NO-DROP\nRULE-SET,https://example.test/rules,REJECT\nRULE-SET,local-rules,REJECT\nDOMAIN,example.test,\"\""})
+	if len(parsed.values["url_rewrite"]) != 0 || len(parsed.values["rules"]) != 6 || len(parsed.Lines["ignored"]) != 1 || parsed.values["rules"][0].(moduleObject)["http_response"] != "reject-dict" || parsed.values["rules"][2].(moduleObject)["http_user_agent"] != "Browser/*" || parsed.values["rules"][3].(moduleObject)["no_drop"] != true {
 		t.Fatal(parsed)
 	}
 }

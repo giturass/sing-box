@@ -52,6 +52,7 @@ func (r *Router) routeHTTPDebug(ctx context.Context, conn net.Conn, metadata ada
 	if engine == nil || !engine.Candidate(debugMetadata(metadata)) {
 		return conn, false
 	}
+	_, requestOnly := outbound.(*debugRequestRejectOutbound)
 	// A CONNECT/SOCKS client may wait for success before sending ClientHello.
 	// This is the same early tunnel acknowledgment needed by route sniffing.
 	if err := N.ReportConnHandshakeSuccess(conn, conn); err != nil {
@@ -70,6 +71,9 @@ func (r *Router) routeHTTPDebug(ctx context.Context, conn net.Conn, metadata ada
 		}
 	}
 	info := debugMetadata(captureMetadata)
+	if requestOnly && info.Protocol != "http" && info.Protocol != "tls" {
+		return conn, false
+	}
 	if info.Protocol != "http" && info.Protocol != "tls" && engine.WantsRawTCP(info) {
 		info.Protocol, info.RawTCP = "tcp", true
 	}
@@ -81,7 +85,7 @@ func (r *Router) routeHTTPDebug(ctx context.Context, conn net.Conn, metadata ada
 	}
 	if info.Protocol == "tls" {
 		var selected bool
-		conn, info, selected = engine.SelectTLS(ctx, conn, info)
+		conn, info, selected = engine.SelectTLS(ctx, conn, info, requestOnly)
 		if !selected {
 			engine.Observe(info, "TLS")
 			return conn, false
@@ -143,7 +147,7 @@ func (r *Router) routeHTTPDebug(ctx context.Context, conn net.Conn, metadata ada
 		go r.RouteConnectionEx(mappedCtx, routed, mappedMetadata, func(error) { routed.Close() })
 		return local, nil
 	}
-	return conn, engine.HandleRouted(ctx, conn, info, dial, mapped, adapter.RootPoolFromContext(r.ctx), onClose)
+	return conn, engine.HandleRouted(ctx, conn, info, dial, mapped, adapter.RootPoolFromContext(r.ctx), onClose, r.debugRequestRouter(metadata, info.Protocol))
 }
 
 // Keep upstream's protocol-detection fallback and replay semantics, but grow

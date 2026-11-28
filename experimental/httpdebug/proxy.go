@@ -29,6 +29,9 @@ type Engine struct {
 	rewrite              *RewriteProgram
 	mitm                 *MITMConfig
 	scripts              *ScriptProgram
+	httpRouting          *HTTPRoutingConfig
+	dnsHosts             []compiledDNSHost
+	dnsCache             map[string]dnsScriptCacheEntry
 	scriptEnvironment    scriptEnvironment
 	ca                   *authority
 	store                *Store
@@ -70,7 +73,23 @@ func (e *Engine) Candidate(metadata Metadata) bool {
 	if metadata.Protocol == "tls" {
 		return config != nil && config.ExtractHosts && config.candidate(metadata)
 	}
-	return config != nil && config.candidate(metadata) || e.httpProgram(metadata) != nil || e.WantsRawTCP(metadata) || e.wantsWebSocket(metadata)
+	return config != nil && config.candidate(metadata) || e.httpRouting.candidate(metadata) || e.httpProgram(metadata) != nil || e.WantsRawTCP(metadata) || e.wantsWebSocket(metadata)
+}
+
+// A rejection may wait for an HTTP request only inside an enabled HTTP engine
+// scope. Recording raw TCP never turns a rejected connection into a route.
+func (e *Engine) RequestRoutingCandidate(metadata Metadata) bool {
+	if e.httpRouting == nil || !e.httpRouting.Enabled {
+		return false
+	}
+	if e.ca != nil && e.mitm.candidate(metadata) {
+		return true
+	}
+	if metadata.Protocol != "" && metadata.Protocol != "http" {
+		return false
+	}
+	config := e.recording.Load()
+	return e.httpRouting.candidate(metadata) || config != nil && config.candidate(metadata) || e.httpProgram(metadata) != nil
 }
 
 func (e *Engine) Matches(metadata Metadata) bool {
@@ -78,7 +97,7 @@ func (e *Engine) Matches(metadata Metadata) bool {
 		return e.mitm.matches(metadata)
 	}
 	config := e.recording.Load()
-	return config != nil && config.matches(metadata) || e.httpProgram(metadata) != nil || e.WantsRawTCP(metadata) || e.wantsWebSocket(metadata)
+	return config != nil && config.matches(metadata) || e.httpRouting.candidate(metadata) || e.httpProgram(metadata) != nil || e.WantsRawTCP(metadata) || e.wantsWebSocket(metadata)
 }
 
 func (e *Engine) WantsQUIC(metadata Metadata) bool {
@@ -109,7 +128,7 @@ func (e *Engine) Handle(ctx context.Context, conn net.Conn, metadata Metadata, d
 	return e.HandleRouted(ctx, conn, metadata, dial, nil, roots, onClose)
 }
 
-func (e *Engine) HandleRouted(ctx context.Context, conn net.Conn, metadata Metadata, dial DialFunc, mapped RewriteDialFunc, roots *x509.CertPool, onClose func(error)) bool {
+func (e *Engine) HandleRouted(ctx context.Context, conn net.Conn, metadata Metadata, dial DialFunc, mapped RewriteDialFunc, roots *x509.CertPool, onClose func(error), routes ...RequestRouteFunc) bool {
 	selected, hasSelection := conn.(*selectedTLSConn)
 	if hasSelection {
 		defer selected.selection.release(false)
@@ -137,7 +156,7 @@ func (e *Engine) HandleRouted(ctx context.Context, conn net.Conn, metadata Metad
 	go func() {
 		defer e.wg.Done()
 		stopClose := context.AfterFunc(ctx, func() { conn.Close() })
-		err := e.serve(ctx, conn, metadata, dial, mapped, roots)
+		err := e.serve(ctx, conn, metadata, dial, mapped, roots, routes...)
 		stopClose()
 		cancel()
 		conn.Close()
@@ -175,7 +194,7 @@ func (e *Engine) Close() {
 	e.wg.Wait()
 }
 
-func (e *Engine) serve(ctx context.Context, conn net.Conn, metadata Metadata, dial DialFunc, mapped RewriteDialFunc, roots *x509.CertPool) error {
+func (e *Engine) serve(ctx context.Context, conn net.Conn, metadata Metadata, dial DialFunc, mapped RewriteDialFunc, roots *x509.CertPool, routes ...RequestRouteFunc) error {
 	dial = bindDialLifetime(ctx, dial)
 	transport := newTransport(dial)
 	scheme := "http"
@@ -221,7 +240,12 @@ func (e *Engine) serve(ctx context.Context, conn net.Conn, metadata Metadata, di
 		defer mappedTransport.CloseIdleConnections()
 	}
 	target := &url.URL{Scheme: scheme, Host: net.JoinHostPort(metadata.Host, strconv.Itoa(int(metadata.Port)))}
-	process := e.handler(metadata, target, transport, mappedTransport)
+	var requestPool *requestTransportPool
+	if e.httpRouting != nil && e.httpRouting.Enabled && len(routes) > 0 && routes[0] != nil {
+		requestPool = newRequestTransportPool(ctx, routes[0], roots, e.mitm, false)
+		defer requestPool.Close()
+	}
+	process := e.handler(metadata, target, transport, mappedTransport, requestPool)
 	var received atomic.Bool
 	handler := http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
 		received.Store(true)
@@ -300,7 +324,11 @@ func newTransport(dial DialFunc) *http.Transport {
 	}
 }
 
-func (e *Engine) handler(metadata Metadata, target *url.URL, transport http.RoundTripper, mapped *http.Transport) http.Handler {
+func (e *Engine) handler(metadata Metadata, target *url.URL, transport http.RoundTripper, mapped *http.Transport, routing ...*requestTransportPool) http.Handler {
+	var requestPool *requestTransportPool
+	if len(routing) > 0 {
+		requestPool = routing[0]
+	}
 	return http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
 		e.mu.Lock()
 		if e.closed {
@@ -386,7 +414,37 @@ func (e *Engine) handler(metadata Metadata, target *url.URL, transport http.Roun
 			writeLog("debug", "HTTP processing; connection="+metadata.ConnectionID+" request="+scriptID+": "+message)
 		}
 		var local *http.Response
-		if program != nil {
+		var requestRoute *RequestRoute
+		if requestPool != nil {
+			requestRoute, err = requestPool.route(request.Context(), request)
+			if requestRoute != nil {
+				actual := requestRoute.Metadata
+				requestMetadata.RequestRoute = &actual
+				e.store.requestRoute(id, actual)
+			}
+			if err != nil {
+				e.store.setError(id, err)
+				if errors.Is(err, ErrRequestRejected) {
+					panic(http.ErrAbortHandler)
+				}
+				e.reportError("HTTP request routing: " + err.Error())
+				e.writeError(w, request, id, "B-box: request routing failed; see request details or service logs", http.StatusBadGateway)
+				return
+			}
+			if requestRoute == nil {
+				e.writeError(w, request, id, "B-box: request routing returned no decision", http.StatusBadGateway)
+				return
+			}
+			if requestRoute.RejectResponse != "" {
+				local = localRouteResponse(request, requestRoute.RejectResponse)
+				note("HTTP request rule selected " + requestRoute.RejectResponse)
+				if request.ProtoMajor == 1 && request.Body != nil && request.Body != http.NoBody {
+					_ = http.NewResponseController(w).SetReadDeadline(time.Now())
+					w.Header().Set("Connection", "close")
+				}
+			}
+		}
+		if program != nil && local == nil {
 			// Abort rejected HTTP/1 uploads without draining unfinished bodies.
 			controller := http.NewResponseController(w)
 			var progress *requestBodyProgress
@@ -421,7 +479,11 @@ func (e *Engine) handler(metadata Metadata, target *url.URL, transport http.Roun
 			}
 			e.store.rewrittenRequest(id, request, originalURL.String())
 			if !sameRewriteOrigin(request.URL, &originalURL) {
-				note("Mapped destination uses sing-box routing; connection metadata describes the original client route")
+				if requestPool != nil {
+					note("Mapped destination uses the policy selected for the original request")
+				} else {
+					note("Mapped destination uses sing-box routing; connection metadata describes the original client route")
+				}
 			}
 		}
 		if local == nil {
@@ -438,7 +500,11 @@ func (e *Engine) handler(metadata Metadata, target *url.URL, transport http.Roun
 			if changed {
 				e.store.rewrittenRequest(id, request, originalURL.String())
 				if !sameRewriteOrigin(request.URL, &originalURL) {
-					note("Mapped destination uses sing-box routing; connection metadata describes the original client route")
+					if requestPool != nil {
+						note("Mapped destination uses the policy selected for the original request")
+					} else {
+						note("Mapped destination uses sing-box routing; connection metadata describes the original client route")
+					}
 				}
 			}
 		}
@@ -471,6 +537,22 @@ func (e *Engine) handler(metadata Metadata, target *url.URL, transport http.Roun
 				var err error
 				if local != nil {
 					response = local
+				} else if requestPool != nil {
+					destination := ""
+					if !sameRewriteOrigin(request.URL, &originalURL) {
+						destination = rewrittenRequestDestination(request.URL)
+					}
+					actual := requestRoute.Metadata
+					if destination != "" {
+						actual.Destination = destination
+					}
+					actual.Network = "tcp"
+					if requestPool.h3 && destination == "" && requestRoute.PacketDial != nil && r.URL.Scheme == "https" {
+						actual.Network = "udp"
+					}
+					requestMetadata.RequestRoute = &actual
+					e.store.requestRoute(id, actual)
+					response, err = requestPool.roundTrip(r, requestRoute, destination)
 				} else if sameRewriteOrigin(request.URL, &originalURL) {
 					response, err = transport.RoundTrip(r)
 				} else if mapped != nil {

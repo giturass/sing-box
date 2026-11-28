@@ -11,6 +11,7 @@ import (
 
 	"github.com/sagernet/sing-box/adapter"
 	"github.com/sagernet/sing-box/experimental/httpdebug"
+	"github.com/sagernet/sing-box/option"
 	"github.com/sagernet/sing/common/control"
 	M "github.com/sagernet/sing/common/metadata"
 )
@@ -84,7 +85,9 @@ func (t *UIScriptTask) Run() (string, error) {
 func NeedsUIMITMCA(configContent string) (bool, error) {
 	ctx := baseContext(nil)
 	configContent, err := effectiveModuleConfig(ctx, configContent)
-	if err != nil { return false, err }
+	if err != nil {
+		return false, err
+	}
 	options, err := parseConfig(ctx, configContent)
 	if err != nil {
 		return false, err
@@ -98,10 +101,11 @@ func (s *CommandServer) prepareUIProcessing(configContent string, overrides *Ove
 	if err != nil {
 		return nil, err
 	}
-	if options.Experimental == nil {
-		return nil, nil
-	}
 	config := options.Experimental
+	if config == nil {
+		config = &option.ExperimentalOptions{}
+	}
+	routing := uiHTTPRoutingConfig(options)
 	var signer crypto.Signer
 	if config.MITM != nil && config.MITM.Enabled && len(config.MITM.Hosts) > 0 {
 		ca, err := httpdebug.ParseCA(overrides.MitmCertificate)
@@ -112,7 +116,8 @@ func (s *CommandServer) prepareUIProcessing(configContent string, overrides *Ove
 	}
 	prepared, err := httpdebug.PrepareProcessing(overrides.ProcessingDirectory, (*httpdebug.MITMConfig)(config.MITM),
 		(*httpdebug.RewriteConfig)(config.HTTPRewrite), (*httpdebug.ScriptsConfig)(config.Scripts),
-		overrides.MitmCertificate, signer, overrides.ScriptTimezone)
+		overrides.MitmCertificate, signer, overrides.ScriptTimezone,
+		httpdebug.ProcessingConfig{HTTPRouting: routing, DNSHosts: config.DNSHosts})
 	if err != nil {
 		return nil, err
 	}
@@ -157,7 +162,7 @@ func (s *CommandServer) activateUIProcessing(prepared *httpdebug.PreparedProcess
 			return nil, errors.New("invalid script destination")
 		}
 		metadata := adapter.InboundContext{Inbound: "b-box-scripts", Network: "tcp", Source: M.ParseSocksaddr("127.0.0.1:0"), Destination: destination}
-		routeCtx := adapter.WithContext(httpdebug.WithoutProcessing(ctx), &metadata)
+		routeCtx := adapter.WithContext(httpdebug.WithoutScriptEvaluation(httpdebug.WithoutProcessing(ctx)), &metadata)
 		if policy := httpdebug.ScriptPolicy(ctx); policy != "" {
 			return routes.dial(routeCtx, func(ctx context.Context) (net.Conn, error) {
 				outbound, found := instance.Box().Outbound().Outbound(policy)

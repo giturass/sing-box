@@ -137,6 +137,7 @@ type RuleSetMetadata struct {
 	ContainsWIFIRule         bool
 	ContainsIPCIDRRule       bool
 	ContainsDNSQueryTypeRule bool
+	ContainsHTTPRule         bool
 	// ContainsNonIPCIDRRule signals that the rule-set carries at least one sub-rule
 	// with a predicate other than destination ip_cidr / ip_set, so it can contribute
 	// to DNS pre-response matching. A rule-set where this is false and

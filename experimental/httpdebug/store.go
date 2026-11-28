@@ -76,34 +76,35 @@ type Detail struct {
 }
 
 type Summary struct {
-	ID            string   `json:"id"`
-	ConnectionID  string   `json:"connectionId,omitempty"`
-	StartedAt     int64    `json:"startedAt"`
-	DurationMS    int64    `json:"durationMs"`
-	Complete      bool     `json:"complete"`
-	Method        string   `json:"method"`
-	URL           string   `json:"url"`
-	OriginalURL   string   `json:"originalUrl,omitempty"`
-	Protocol      string   `json:"protocol"`
-	Status        int      `json:"status"`
-	Packages      []string `json:"packages"`
-	Source        string   `json:"source"`
-	Destination   string   `json:"destination"`
-	Inbound       string   `json:"inbound"`
-	Outbound      string   `json:"outbound"`
-	Rule          string   `json:"rule"`
-	Bytes         int64    `json:"bytes"`
-	RequestBytes  int64    `json:"requestBytes"`
-	ResponseBytes int64    `json:"responseBytes"`
-	Error         string   `json:"error,omitempty"`
-	DomainOnly    bool     `json:"domainOnly,omitempty"`
-	StreamID      string   `json:"streamId,omitempty"`
-	ParentID      string   `json:"parentId,omitempty"`
-	Direction     string   `json:"direction,omitempty"`
-	Opcode        int      `json:"opcode,omitempty"`
-	Injected      bool     `json:"injected,omitempty"`
-	Dropped       bool     `json:"dropped,omitempty"`
-	StreamActive  bool     `json:"streamActive"`
+	ID            string                `json:"id"`
+	ConnectionID  string                `json:"connectionId,omitempty"`
+	StartedAt     int64                 `json:"startedAt"`
+	DurationMS    int64                 `json:"durationMs"`
+	Complete      bool                  `json:"complete"`
+	Method        string                `json:"method"`
+	URL           string                `json:"url"`
+	OriginalURL   string                `json:"originalUrl,omitempty"`
+	Protocol      string                `json:"protocol"`
+	Status        int                   `json:"status"`
+	Packages      []string              `json:"packages"`
+	Source        string                `json:"source"`
+	Destination   string                `json:"destination"`
+	Inbound       string                `json:"inbound"`
+	Outbound      string                `json:"outbound"`
+	Rule          string                `json:"rule"`
+	RequestRoute  *RequestRouteMetadata `json:"requestRoute,omitempty"`
+	Bytes         int64                 `json:"bytes"`
+	RequestBytes  int64                 `json:"requestBytes"`
+	ResponseBytes int64                 `json:"responseBytes"`
+	Error         string                `json:"error,omitempty"`
+	DomainOnly    bool                  `json:"domainOnly,omitempty"`
+	StreamID      string                `json:"streamId,omitempty"`
+	ParentID      string                `json:"parentId,omitempty"`
+	Direction     string                `json:"direction,omitempty"`
+	Opcode        int                   `json:"opcode,omitempty"`
+	Injected      bool                  `json:"injected,omitempty"`
+	Dropped       bool                  `json:"dropped,omitempty"`
+	StreamActive  bool                  `json:"streamActive"`
 }
 
 type Page struct {
@@ -257,6 +258,18 @@ func (s *Store) add(metadata Metadata, request *http.Request, bodyLimit int64, b
 	s.order = append(s.order, id)
 	s.persistLocked(record)
 	return record
+}
+
+func (s *Store) requestRoute(id string, metadata RequestRouteMetadata) {
+	s.mu.Lock()
+	record := s.records[id]
+	defer s.save(record)
+	defer s.mu.Unlock()
+	if record != nil && !record.finishing && !record.Complete {
+		copy := metadata
+		record.Metadata.RequestRoute = &copy
+		s.persistLocked(record)
+	}
 }
 
 func (s *Store) response(id string, response *http.Response) {
