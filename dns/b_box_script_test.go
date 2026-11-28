@@ -76,11 +76,14 @@ func TestBBoxDNSHostExchangeTypesAndFlags(t *testing.T) {
 				})
 				router.legacyDNSMode = legacy
 				query := bBoxDNSQuestionForTest(test.qtype, test.qclass)
-				original := query.Copy()
+				original, err := query.Pack()
+				require.NoError(t, err)
 				// Explicit transports must not bypass the profile's Host mapping.
 				response, err := router.Exchange(context.Background(), query, adapter.DNSQueryOptions{Transport: final})
 				require.NoError(t, err)
-				require.Equal(t, original, query)
+				current, err := query.Pack()
+				require.NoError(t, err)
+				require.Equal(t, original, current)
 				require.Equal(t, query.Id, response.Id)
 				require.Equal(t, query.Question, response.Question)
 				require.False(t, response.RecursionDesired)
@@ -347,12 +350,14 @@ func TestBBoxDNSScriptDefaultOutboundConnectionUsesQueryLifetime(t *testing.T) {
 type bBoxDNSServerTransport struct {
 	TransportAdapter
 	server  string
+	started *atomic.Int32
 	closed  *atomic.Int32
 	queries *atomic.Int32
 }
 
 func (t *bBoxDNSServerTransport) Start(stage adapter.StartStage, scope *adapter.Scope) error {
 	if stage == adapter.StartStateStart {
+		t.started.Add(1)
 		scope.Add(func() error { t.closed.Add(1); return nil })
 	}
 	return nil
@@ -390,13 +395,13 @@ func TestBBoxDNSScriptServerDelegationAndLookup(t *testing.T) {
 		return httpdebug.DNSScriptResult{Servers: servers}, true, nil
 	})
 	registry := NewTransportRegistry()
-	var constructed, closed, queries atomic.Int32
+	var constructed, started, closed, queries atomic.Int32
 	RegisterTransport[option.RemoteDNSServerOptions](registry, C.DNSTypeUDP, func(ctx context.Context, logger log.ContextLogger, tag string, options option.RemoteDNSServerOptions) (adapter.DNSTransport, error) {
 		constructed.Add(1)
 		if options.Detour != "proxy" || options.ServerPort != 53 || !httpdebug.ScriptEvaluationDisabled(ctx) || !httpdebug.ProcessingDisabled(ctx) {
 			return nil, errors.New("script DNS server bypassed core transport settings")
 		}
-		return &bBoxDNSServerTransport{TransportAdapter: NewTransportAdapter(C.DNSTypeUDP, tag, nil), server: options.Server, closed: &closed, queries: &queries}, nil
+		return &bBoxDNSServerTransport{TransportAdapter: NewTransportAdapter(C.DNSTypeUDP, tag, nil), server: options.Server, started: &started, closed: &closed, queries: &queries}, nil
 	})
 	router.outbound = &bBoxDNSOutboundManagerForTest{&bBoxDNSOutbound{"proxy"}}
 	router.ctx = service.ContextWith[adapter.DNSTransportRegistry](router.ctx, registry)
@@ -404,6 +409,10 @@ func TestBBoxDNSScriptServerDelegationAndLookup(t *testing.T) {
 	query := bBoxDNSQuestionForTest(mDNS.TypeTXT, mDNS.ClassCHAOS)
 	response, err := router.Exchange(context.Background(), query, adapter.DNSQueryOptions{Timeout: time.Second})
 	require.NoError(t, err)
+	// Cancellation can stop a constructed transport before its scope starts it.
+	require.Greater(t, started.Load(), int32(0))
+	require.Equal(t, started.Load(), closed.Load())
+	require.GreaterOrEqual(t, constructed.Load(), started.Load())
 	require.Equal(t, query.Id, response.Id)
 	require.Equal(t, query.Question, response.Question)
 	require.False(t, response.RecursionDesired)
@@ -411,12 +420,12 @@ func TestBBoxDNSScriptServerDelegationAndLookup(t *testing.T) {
 	require.Len(t, response.Answer, 1)
 	require.Equal(t, uint16(mDNS.ClassCHAOS), response.Answer[0].Header().Class)
 	require.Equal(t, []string{"server-choice"}, response.Answer[0].(*mDNS.TXT).Txt)
-	require.Equal(t, constructed.Load(), closed.Load())
 	require.Same(t, router.outbound, service.FromContext[adapter.OutboundManager](router.ctx))
 	addresses, err := router.Lookup(context.Background(), "script.example.test", adapter.DNSQueryOptions{LookupStrategy: C.DomainStrategyPreferIPv6, Timeout: time.Second})
 	require.NoError(t, err)
+	require.Equal(t, started.Load(), closed.Load())
+	require.GreaterOrEqual(t, constructed.Load(), started.Load())
 	require.Equal(t, []netip.Addr{netip.MustParseAddr("2001:db8::22"), netip.MustParseAddr("192.0.2.22")}, addresses)
-	require.Equal(t, constructed.Load(), closed.Load())
 	router.defaultDomainStrategy = C.DomainStrategyIPv4Only
 	for _, test := range []struct {
 		options adapter.DNSQueryOptions
@@ -429,8 +438,9 @@ func TestBBoxDNSScriptServerDelegationAndLookup(t *testing.T) {
 		test.options.Timeout = time.Second
 		addresses, err = router.Lookup(context.Background(), "script.example.test", test.options)
 		require.NoError(t, err)
+		require.Equal(t, started.Load(), closed.Load())
+		require.GreaterOrEqual(t, constructed.Load(), started.Load())
 		require.Equal(t, []netip.Addr{test.want}, addresses)
-		require.Equal(t, constructed.Load(), closed.Load())
 		require.Same(t, router.outbound, service.FromContext[adapter.OutboundManager](router.ctx))
 	}
 	require.Zero(t, final.queryCount.Load())
