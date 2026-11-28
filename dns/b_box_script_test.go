@@ -376,7 +376,7 @@ func (t *bBoxDNSServerTransport) Exchange(ctx context.Context, query *mDNS.Msg) 
 	question := query.Question[0]
 	switch question.Qtype {
 	case mDNS.TypeA:
-		response.Answer = []mDNS.RR{&mDNS.A{Hdr: mDNS.RR_Header{Name: question.Name, Rrtype: mDNS.TypeA, Class: question.Qclass, Ttl: 15}, A: net.ParseIP("192.0.2.22")}}
+		response.Answer = []mDNS.RR{&mDNS.A{Hdr: mDNS.RR_Header{Name: question.Name, Rrtype: mDNS.TypeA, Class: question.Qclass, Ttl: 15}, A: net.ParseIP("192.0.2.22").To4()}}
 	case mDNS.TypeAAAA:
 		response.Answer = []mDNS.RR{&mDNS.AAAA{Hdr: mDNS.RR_Header{Name: question.Name, Rrtype: mDNS.TypeAAAA, Class: question.Qclass, Ttl: 15}, AAAA: net.ParseIP("2001:db8::22")}}
 	default:
